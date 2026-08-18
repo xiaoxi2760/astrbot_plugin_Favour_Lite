@@ -65,6 +65,16 @@ class FavourTitle(SQLModel, table=True):
     selected_title: str = Field(default="")
 
 
+class UserTitleGrant(SQLModel, table=True):
+    """管理员授予用户的 EX 称号（全局属性）"""
+    __tablename__ = "user_title_grants"
+    __table_args__ = {"extend_existing": True}
+
+    user_id: str = Field(primary_key=True)
+    title: str = Field(primary_key=True)
+    granted_at: datetime = Field(default_factory=datetime.now)
+
+
 class FavourDBManager:
     """基于SQLite的好感度数据库管理器"""
     def __init__(self, data_dir: Path, min_val: int = -100, max_val: int = 100):
@@ -140,6 +150,14 @@ class FavourDBManager:
                 await conn.execute(text(
                     "CREATE TABLE IF NOT EXISTS user_titles ("
                     "user_id TEXT PRIMARY KEY, selected_title TEXT DEFAULT '')"
+                ))
+
+                # EX 称号授予表（管理员分配，用户全局拥有）
+                await conn.execute(text(
+                    "CREATE TABLE IF NOT EXISTS user_title_grants ("
+                    "user_id TEXT NOT NULL, title TEXT NOT NULL, "
+                    "granted_at DATETIME DEFAULT (datetime('now')), "
+                    "PRIMARY KEY (user_id, title))"
                 ))
 
                 self._initialized = True
@@ -360,6 +378,61 @@ class FavourDBManager:
                 return True
         except Exception as e:
             logger.error(f"写入称号失败: {e}")
+            return False
+
+    @_retry_on_locked()
+    async def get_granted_titles(self, user_id: str) -> List[str]:
+        """查询用户已被授予的 EX 称号列表（全局）。"""
+        await self.init_db()
+        if not is_valid_userid(user_id):
+            return []
+        try:
+            async with self.async_session() as session:
+                stmt = select(UserTitleGrant.title).where(UserTitleGrant.user_id == user_id)
+                rows = (await session.execute(stmt)).scalars().all()
+                return list(rows)
+        except Exception as e:
+            logger.error(f"查询授予称号失败: {e}")
+            return []
+
+    @_retry_on_locked()
+    async def grant_title(self, user_id: str, title: str) -> bool:
+        """授予用户 EX 称号。返回 True=新增成功；False=已存在或失败。"""
+        await self.init_db()
+        if not is_valid_userid(user_id) or not title:
+            return False
+        try:
+            async with self.async_session() as session:
+                stmt = select(UserTitleGrant).where(
+                    UserTitleGrant.user_id == user_id,
+                    UserTitleGrant.title == title,
+                )
+                if (await session.execute(stmt)).scalars().first():
+                    return False
+                session.add(UserTitleGrant(user_id=user_id, title=title))
+                await session.commit()
+                return True
+        except Exception as e:
+            logger.error(f"授予称号失败: {e}")
+            return False
+
+    @_retry_on_locked()
+    async def revoke_title(self, user_id: str, title: str) -> bool:
+        """移除用户已授予的 EX 称号。返回 True=删除成功；False=不存在或失败。"""
+        await self.init_db()
+        if not is_valid_userid(user_id) or not title:
+            return False
+        try:
+            async with self.async_session() as session:
+                stmt = delete(UserTitleGrant).where(
+                    UserTitleGrant.user_id == user_id,
+                    UserTitleGrant.title == title,
+                )
+                result = await session.execute(stmt)
+                await session.commit()
+                return result.rowcount > 0
+        except Exception as e:
+            logger.error(f"移除称号失败: {e}")
             return False
 
     @_retry_on_locked()

@@ -37,6 +37,9 @@ FAVOUR_TITLES = [
     (1314, "达斯维达尼亚"),
 ]
 
+# EX 称号（获取方式未定，仅由管理员分配）
+EX_TITLES = ["直到下次再见", "深渊的光谱", "最初和最后的礼物"]
+
 class FavourManagerTool(Star):
     def __init__(self, context: Context, config: Optional[Dict] = None):
         super().__init__(context)
@@ -2874,6 +2877,10 @@ class FavourManagerTool(Star):
         available = list(unlocked_fav)
         if cake_title and cake_title not in available:
             available.append(cake_title)
+        granted = await self.db_manager.get_granted_titles(user_id)
+        for t in granted:
+            if t not in available:
+                available.append(t)
         # 去重保序
         seen = set()
         available = [x for x in available if not (x in seen or seen.add(x))]
@@ -2915,8 +2922,56 @@ class FavourManagerTool(Star):
         lines.append("")
         lines.append("蛋糕称号：喂蛋糕获得的生涯称号（如 海啸级投喂手 等）")
         lines.append("")
+        lines.append("EX 称号（获取方式暂未公开）：")
+        for t in EX_TITLES:
+            lines.append(f"· {t}")
+        lines.append("")
         lines.append("使用「称号」查看并更换你的称号。")
         yield event.plain_result("\n".join(lines))
+
+    @filter.command("分配称号")
+    async def grant_ex_title(self, event: AstrMessageEvent, target: str, title: str):
+        """分配 EX 称号：分配称号 @用户 <EX称号> (仅Bot管理员)"""
+        if not await self._check_permission(event, PermLevel.SUPERUSER):
+            yield event.plain_result("权限不足！仅Bot管理员可用。")
+            return
+
+        uid = self._get_target_uid(event, target)
+        if not uid:
+            yield event.plain_result("未找到用户，请使用 @ 或输入 ID。")
+            return
+        title = (title or "").strip()
+        if title not in EX_TITLES:
+            yield event.plain_result("没有这个 EX 称号。可分配的称号：\n" + "\n".join(f"· {t}" for t in EX_TITLES))
+            return
+        ok = await self.db_manager.grant_title(uid, title)
+        if ok:
+            yield event.plain_result(f"✅ 已授予用户 {uid} EX 称号：{title}")
+            logger.info(f"管理员 {event.get_sender_id()} 授予用户 {uid} EX称号 {title}")
+        else:
+            yield event.plain_result(f"用户 {uid} 已拥有称号「{title}」，无需重复分配。")
+
+    @filter.command("移除称号")
+    async def revoke_ex_title(self, event: AstrMessageEvent, target: str, title: str):
+        """移除 EX 称号：移除称号 @用户 <EX称号> (仅Bot管理员)"""
+        if not await self._check_permission(event, PermLevel.SUPERUSER):
+            yield event.plain_result("权限不足！仅Bot管理员可用。")
+            return
+
+        uid = self._get_target_uid(event, target)
+        if not uid:
+            yield event.plain_result("未找到用户，请使用 @ 或输入 ID。")
+            return
+        title = (title or "").strip()
+        if title not in EX_TITLES:
+            yield event.plain_result("没有这个 EX 称号。可移除的称号：\n" + "\n".join(f"· {t}" for t in EX_TITLES))
+            return
+        ok = await self.db_manager.revoke_title(uid, title)
+        if ok:
+            yield event.plain_result(f"✅ 已移除用户 {uid} 的 EX 称号：{title}")
+            logger.info(f"管理员 {event.get_sender_id()} 移除用户 {uid} EX称号 {title}")
+        else:
+            yield event.plain_result(f"用户 {uid} 没有称号「{title}」，无需移除。")
 
     # ================= 4. 帮助类型 =================
 
@@ -2950,6 +3005,8 @@ class FavourManagerTool(Star):
             msg.append("- 清空全局好感度")
             msg.append("- 取消冷暴力 [@用户]")
             msg.append("- 查看冷暴力列表")
+            msg.append("- 分配称号 @用户 <EX称号>")
+            msg.append("- 移除称号 @用户 <EX称号>")
 
         yield event.plain_result("\n".join(msg))
 
