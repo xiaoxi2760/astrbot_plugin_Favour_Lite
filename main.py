@@ -2922,7 +2922,7 @@ class FavourManagerTool(Star):
         lines.append("")
         lines.append("蛋糕称号：喂蛋糕获得的生涯称号（如 海啸级投喂手 等）")
         lines.append("")
-        lines.append("EX 称号（获取方式暂未公开）：")
+        lines.append("EX 称号（隐藏）：")
         for t in EX_TITLES:
             lines.append(f"· {t}")
         lines.append("")
