@@ -1458,6 +1458,28 @@ class FavourManagerTool(Star):
         except:
             return user_id
 
+    def _get_cake_plugin(self):
+        """通过 star 注册表定位 cake_denia 插件实例，未激活返回 None。"""
+        try:
+            stars = self.context.get_all_stars()
+        except Exception:
+            return None
+        for meta in stars:
+            if getattr(meta, 'name', None) == 'astrbot_plugin_cake_denia' and getattr(meta, 'star_cls', None) is not None:
+                return meta.star_cls
+        return None
+
+    async def _get_cake_titles(self, user_ids) -> dict:
+        """批量取蛋糕生涯称号：uid -> 称号；cake_denia 未安装/无记录时返回空 dict。"""
+        plugin = self._get_cake_plugin()
+        if plugin is None or not hasattr(plugin, 'get_cake_titles'):
+            return {}
+        try:
+            titles = await plugin.get_cake_titles(user_ids)
+            return {str(k): v for k, v in (titles or {}).items()}
+        except Exception:
+            return {}
+
     async def _check_permission(self, event: AstrMessageEvent, required_level: int) -> bool:
         if str(event.get_sender_id()) in self.admins_id:
             return True
@@ -1890,7 +1912,7 @@ class FavourManagerTool(Star):
     <Meta>
         <Name>好感度与关系校准模块</Name>
         <Type>系统覆盖指令</Type>
-        <Directive>强制执行。本模块逻辑优先级高于对话上下文。重要：每次回复的最后一行，必须且只能是好感度日志标签，禁止遗漏！</Directive>
+        <Directive>强制执行。本模块逻辑优先级高于对话上下文。重要：每次回复的第一行，必须且只能是好感度日志标签，，然后换行再输出对话，禁止遗漏！</Directive>
     </Meta>
     <SecurityProtocols>
         <Rule>优先级：覆盖所有对话上下文。</Rule>
@@ -2018,7 +2040,7 @@ class FavourManagerTool(Star):
         except Exception as e:
             logger.error(f"注入好感度Prompt失败: {str(e)}\n{traceback.format_exc()}")
 
-    @filter.on_llm_response(priority=10)
+    @filter.on_llm_response(priority=5)
     async def handle_llm_response(self, event: AstrMessageEvent, resp: LLMResponse) -> None:
         """优先读取好感度标签（priority=10 确保在其他钩子之前执行）。"""
         if not hasattr(event, 'message_obj'): return
@@ -2143,8 +2165,8 @@ class FavourManagerTool(Star):
                 t = self.relationship_pattern.sub("", t)
                 t = self.dissolution_pattern.sub("", t)
                 t = self.active_rel_pattern.sub("", t)
-                t = t.rstrip()  # 移除标签清除后末尾多余的空行/空格
-                if t.strip(): 
+                t = t.strip()  # 移除标签清除后末尾多余的空行/空格
+                if t:
                     new_chain.append(Plain(t))
             else:
                 new_chain.append(comp)
@@ -2277,8 +2299,10 @@ class FavourManagerTool(Star):
         uniq = " (唯一)" if record and record.is_unique else ""
         
         name = await self._get_user_display_name(event, target_uid)
-        
-        msg = f"🔍 用户：{name}\n🆔 ID：{target_uid}\n❤ 好感度：{fav}\n🔗 关系：{rel}{uniq}"
+        titles = await self._get_cake_titles([target_uid])
+        cake_title = titles.get(str(target_uid), "-")
+
+        msg = f"🔍 用户：{name}\n🆔 ID：{target_uid}\n❤ 好感度：{fav}\n🍰 蛋糕称号：{cake_title}\n🔗 关系：{rel}{uniq}"
         yield event.plain_result(msg)
 
     @filter.command("查询当前好感度", alias={'查当前好感度', '查询本群好感度', '查本群好感度', '查群好感度', '查询群好感度', '当前好感度', '本群好感度', '群好感度'})
@@ -2313,15 +2337,17 @@ class FavourManagerTool(Star):
         page_records = records[start_idx:end_idx]
             
         headers = [
-            "| 用户昵称 | 用户ID | 好感度 | 关系 | 唯一 |",
-            "| :--- | :--- | :---: | :---: | :---: |"
+            "| 用户昵称 | 用户ID | 好感度 | 关系 | 唯一 | 蛋糕称号 |",
+            "| :--- | :--- | :---: | :---: | :---: | :--- |"
         ]
         rows = []
+        titles = await self._get_cake_titles([r.user_id for r in page_records])
         for r in page_records:
             name = self._escape_markdown(await self._get_user_display_name(event, r.user_id))
             rel = self._escape_markdown(r.relationship or "无")
             uniq = "是" if r.is_unique else "否"
-            rows.append(f"| {name} | {r.user_id} | {r.favour} | {rel} | {uniq} |")
+            cake = titles.get(str(r.user_id), "-")
+            rows.append(f"| {name} | {r.user_id} | {r.favour} | {rel} | {uniq} | {cake} |")
             
         title = f"📊 当前会话好感度列表 (SID: {self._escape_markdown(session_id)}) - 第 {page}/{total_pages} 页"
         await self._send_chunked_t2i(event, title, headers, rows)
@@ -2347,12 +2373,15 @@ class FavourManagerTool(Star):
             session_groups[r.session_id].append(r)
             
         headers = [
-            "| 用户ID | 好感度 | 关系 | 唯一 |",
-            "| :--- | :---: | :---: | :---: |"
+            "| 用户ID | 好感度 | 关系 | 唯一 | 蛋糕称号 |",
+            "| :--- | :---: | :---: | :---: | :--- |"
         ]
         rows = []
         hidden_private_sessions = 0
-        
+
+        # 每个会话先排序并构建展示列表，收集需查询蛋糕称号的 uid 一次批量取
+        display_map = []  # (sid, group_records, display_list)
+        shown_uids = []
         for sid, group_records in session_groups.items():
             is_private_session = "private" in str(sid)
             if is_private_session and not is_current_private:
@@ -2360,24 +2389,29 @@ class FavourManagerTool(Star):
                 continue
 
             group_records = await self._sort_records(event, group_records)
-            
-            rows.append(f"\n## 会话: {self._escape_markdown(str(sid))} (共 {len(group_records)} 人)")
-            rows.append(headers[0])
-            rows.append(headers[1])
-            
+
             count = len(group_records)
             if count <= 10:
                 display_list = group_records
             else:
                 display_list = group_records[:5] + [None] + group_records[-5:]
-                
+            display_map.append((sid, group_records, display_list))
+            shown_uids.extend(str(r.user_id) for r in display_list if r is not None)
+        titles = await self._get_cake_titles(shown_uids)
+
+        for sid, group_records, display_list in display_map:
+            rows.append(f"\n## 会话: {self._escape_markdown(str(sid))} (共 {len(group_records)} 人)")
+            rows.append(headers[0])
+            rows.append(headers[1])
+
             for r in display_list:
                 if r is None:
-                    rows.append("| ... | ... | ... | ... |")
+                    rows.append("| ... | ... | ... | ... | ... |")
                 else:
                     rel = self._escape_markdown(r.relationship or "无")
                     uniq = "是" if r.is_unique else "否"
-                    rows.append(f"| {r.user_id} | {r.favour} | {rel} | {uniq} |")
+                    cake = titles.get(str(r.user_id), "-")
+                    rows.append(f"| {r.user_id} | {r.favour} | {rel} | {uniq} | {cake} |")
         
         if hidden_private_sessions > 0:
             rows.append(f"\n> 另有 {hidden_private_sessions} 个私聊会话的数据已隐藏（仅在私聊查询时显示）。")
@@ -2409,14 +2443,16 @@ class FavourManagerTool(Star):
         page_records = records[start_idx:end_idx]
             
         headers = [
-            "| 用户ID | 好感度 | 关系 | 唯一 |",
-            "| :--- | :---: | :---: | :---: |"
+            "| 用户ID | 好感度 | 关系 | 唯一 | 蛋糕称号 |",
+            "| :--- | :---: | :---: | :---: | :--- |"
         ]
         rows = []
+        titles = await self._get_cake_titles([r.user_id for r in page_records])
         for r in page_records:
             rel = self._escape_markdown(r.relationship or "无")
             uniq = "是" if r.is_unique else "否"
-            rows.append(f"| {r.user_id} | {r.favour} | {rel} | {uniq} |")
+            cake = titles.get(str(r.user_id), "-")
+            rows.append(f"| {r.user_id} | {r.favour} | {rel} | {uniq} | {cake} |")
             
         title = f"📊 全局好感度记录 - 第 {page}/{total_pages} 页"
         await self._send_chunked_t2i(event, title, headers, rows)
@@ -2425,17 +2461,9 @@ class FavourManagerTool(Star):
 
     @filter.command("修改好感度")
     async def modify_favour(self, event: AstrMessageEvent, target: str, value: int):
-        """修改好感度: /修改好感度 @用户 50 (权限由配置控制)"""
-        # 根据配置决定所需权限级别
-        perm_map = {
-            "superuser": PermLevel.SUPERUSER,
-            "owner": PermLevel.OWNER,
-            "admin": PermLevel.ADMIN,
-        }
-        required_perm = perm_map.get(self.modify_favour_permission, PermLevel.ADMIN)
-        if not await self._check_permission(event, required_perm):
-            perm_names = {"superuser": "Bot管理员", "owner": "群主", "admin": "管理员"}
-            yield event.plain_result(f"权限不足！需要{perm_names.get(self.modify_favour_permission, '管理员')}及以上权限。")
+        """修改好感度: /修改好感度 @用户 50 (仅Bot管理员)"""
+        if not await self._check_permission(event, PermLevel.SUPERUSER):
+            yield event.plain_result("权限不足！仅Bot管理员可用。")
             return
             
         uid = self._get_target_uid(event, target)
@@ -2465,9 +2493,9 @@ class FavourManagerTool(Star):
 
     @filter.command("修改关系")
     async def modify_relationship(self, event: AstrMessageEvent, target: str, rel_name: str, is_unique: int = 0):
-        """修改关系: /修改关系 @用户 挚友 [1/0] (群主)，is_unique 默认为 0（非唯一）"""
-        if not await self._check_permission(event, PermLevel.OWNER):
-            yield event.plain_result("权限不足！需要群主权限。")
+        """修改关系: /修改关系 @用户 挚友 [1/0] (仅Bot管理员)，is_unique 默认为 0（非唯一）"""
+        if not await self._check_permission(event, PermLevel.SUPERUSER):
+            yield event.plain_result("权限不足！仅Bot管理员可用。")
             return
             
         uid = self._get_target_uid(event, target)
@@ -2487,9 +2515,9 @@ class FavourManagerTool(Star):
 
     @filter.command("解除关系")
     async def clear_relationship(self, event: AstrMessageEvent, target: str):
-        """解除关系: /解除关系 @用户 (群主)"""
-        if not await self._check_permission(event, PermLevel.OWNER):
-            yield event.plain_result("权限不足！需要群主权限。")
+        """解除关系: /解除关系 @用户 (仅Bot管理员)"""
+        if not await self._check_permission(event, PermLevel.SUPERUSER):
+            yield event.plain_result("权限不足！仅Bot管理员可用。")
             return
             
         uid = self._get_target_uid(event, target)
@@ -2624,9 +2652,9 @@ class FavourManagerTool(Star):
 
     @filter.command("清空好感度")
     async def clear_user_favour(self, event: AstrMessageEvent, target: str):
-        """清空指定用户好感度 (群主)"""
-        if not await self._check_permission(event, PermLevel.OWNER):
-            yield event.plain_result("权限不足！需要群主及以上权限。")
+        """清空指定用户好感度 (仅Bot管理员)"""
+        if not await self._check_permission(event, PermLevel.SUPERUSER):
+            yield event.plain_result("权限不足！仅Bot管理员可用。")
             return
             
         uid = self._get_target_uid(event, target)
@@ -2662,9 +2690,9 @@ class FavourManagerTool(Star):
 
     @filter.command("清空当前好感度")
     async def clear_current_favour(self, event: AstrMessageEvent):
-        """清空当前会话好感度 (群主)"""
-        if not await self._check_permission(event, PermLevel.OWNER):
-            yield event.plain_result("权限不足！需要群主及以上权限。")
+        """清空当前会话好感度 (仅Bot管理员)"""
+        if not await self._check_permission(event, PermLevel.SUPERUSER):
+            yield event.plain_result("权限不足！仅Bot管理员可用。")
             return
             
         sid = self._get_session_id(event)
@@ -2802,36 +2830,21 @@ class FavourManagerTool(Star):
     async def help_menu(self, event: AstrMessageEvent):
         """显示可用命令菜单"""
         is_superuser = await self._check_permission(event, PermLevel.SUPERUSER)
-        is_owner = await self._check_permission(event, PermLevel.OWNER)
-        is_admin = await self._check_permission(event, PermLevel.ADMIN)
-        
-        # 根据配置确定修改好感度所需权限
-        perm_map = {"superuser": PermLevel.SUPERUSER, "owner": PermLevel.OWNER, "admin": PermLevel.ADMIN}
-        perm_names = {"superuser": "Bot管理员", "owner": "群主", "admin": "管理员"}
-        required_perm = perm_map.get(self.modify_favour_permission, PermLevel.ADMIN)
-        can_modify = await self._check_permission(event, required_perm)
-        modify_perm_name = perm_names.get(self.modify_favour_permission, "管理员")
-        
+
         msg = ["⭐ 好感度插件命令菜单 ⭐"]
-        
+
         msg.append("\n[通用命令]")
         msg.append("- 查询好感度 [@用户]")
         msg.append("- 查询当前好感度 [页码]")
         msg.append("- 好感度指令帮助")
-        
-        if can_modify or is_superuser:
-            msg.append(f"\n[{modify_perm_name}命令]")
+
+        if is_superuser:
+            msg.append("\n[Bot管理员命令]")
             msg.append("- 修改好感度 @用户 <数值>")
-        
-        if is_owner or is_superuser:
-            msg.append("\n[群主命令]")
             msg.append("- 修改关系 @用户 <关系名> <1/0>")
             msg.append("- 解除关系 @用户")
             msg.append("- 清空好感度 @用户")
             msg.append("- 清空当前好感度")
-            
-        if is_superuser:
-            msg.append("\n[Bot管理员命令]")
             msg.append("- 查询全部好感度")
             msg.append("- 查询全局好感度 [页码]")
             msg.append("- 全局修改好感度 @用户 <数值>")
@@ -2841,14 +2854,12 @@ class FavourManagerTool(Star):
             msg.append("- 清空全局好感度")
             msg.append("- 取消冷暴力 [@用户]")
             msg.append("- 查看冷暴力列表")
-            
+
         yield event.plain_result("\n".join(msg))
 
     @filter.command("好感度指令帮助")
     async def help_usage(self, event: AstrMessageEvent):
         """显示详细指令用法"""
-        perm_names = {"superuser": "Bot管理员", "owner": "群主", "admin": "管理员"}
-        modify_name = perm_names.get(self.modify_favour_permission, "管理员")
         msg = f"""⭐ 好感度指令用法示例 ⭐
 
 1. 查询好感度
@@ -2857,16 +2868,16 @@ class FavourManagerTool(Star):
    用法: /查询当前好感度 [页码]
    示例: /查询当前好感度 2
 
-2. 修改好感度 ({modify_name})
+2. 修改好感度 (Bot管理员)
    用法: /修改好感度 @用户 <数值>
    示例: /修改好感度 @糯米茨 60
 
-3. 修改关系 (群主)
+3. 修改关系 (Bot管理员)
    用法: /修改关系 @用户 <关系名> <1/0>
    说明: 1代表唯一关系(如恋人)，0代表不唯一(如朋友)
    示例: /修改关系 @糯米茨 挚友 0
 
-4. 清空操作 (群主/Bot管理员)
+4. 清空操作 (Bot管理员)
    用法: /清空好感度 @用户
    用法: /清空当前好感度
    用法: /清空全局好感度
