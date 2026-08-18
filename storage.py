@@ -146,19 +146,19 @@ class FavourDBManager:
                             logger.info("数据库升级完成（username）。")
                             #################
 
-                # 称号表（用户全局属性：当前选中的称号）
-                await conn.execute(text(
-                    "CREATE TABLE IF NOT EXISTS user_titles ("
-                    "user_id TEXT PRIMARY KEY, selected_title TEXT DEFAULT '')"
-                ))
+                    # 称号表（用户全局属性：当前选中的称号）
+                    await conn.execute(text(
+                        "CREATE TABLE IF NOT EXISTS user_titles ("
+                        "user_id TEXT PRIMARY KEY, selected_title TEXT DEFAULT '')"
+                    ))
 
-                # EX 称号授予表（管理员分配，用户全局拥有）
-                await conn.execute(text(
-                    "CREATE TABLE IF NOT EXISTS user_title_grants ("
-                    "user_id TEXT NOT NULL, title TEXT NOT NULL, "
-                    "granted_at DATETIME DEFAULT (datetime('now')), "
-                    "PRIMARY KEY (user_id, title))"
-                ))
+                    # EX 称号授予表（管理员分配，用户全局拥有）
+                    await conn.execute(text(
+                        "CREATE TABLE IF NOT EXISTS user_title_grants ("
+                        "user_id TEXT NOT NULL, title TEXT NOT NULL, "
+                        "granted_at DATETIME DEFAULT (datetime('now')), "
+                        "PRIMARY KEY (user_id, title))"
+                    ))
 
                 self._initialized = True
                 logger.info(f"好感度数据库已初始化: {self.db_path}")
