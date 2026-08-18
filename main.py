@@ -27,6 +27,16 @@ from .config_manager import PluginConfigManager
 
 PLUGIN_NAME = "astrbot_plugin_Favour_Ultra"
 
+# 好感度称号（按好感度阈值解锁，动态判定；负阈值=好感度 ≤ 该值解锁，正阈值=好感度 ≥ 该值解锁）
+FAVOUR_TITLES = [
+    (-100, "虚质之敌"),
+    (-50, "被遗忘者"),
+    (50, "泡泡同行"),
+    (100, "学院知己"),
+    (520, "一生一世"),
+    (1314, "达斯维达尼亚"),
+]
+
 class FavourManagerTool(Star):
     def __init__(self, context: Context, config: Optional[Dict] = None):
         super().__init__(context)
@@ -1480,6 +1490,31 @@ class FavourManagerTool(Star):
         except Exception:
             return {}
 
+    @staticmethod
+    def _unlocked_favour_titles(favour: int) -> list:
+        """按当前好感度返回已解锁的好感度称号名列表（负阈值：≤解锁；正阈值：≥解锁）。"""
+        unlocked = []
+        for threshold, name in FAVOUR_TITLES:
+            if threshold >= 0:
+                if favour >= threshold:
+                    unlocked.append(name)
+            else:
+                if favour <= threshold:
+                    unlocked.append(name)
+        return unlocked
+
+    async def _get_title_display(self, user_ids) -> dict:
+        """uid -> 显示称号：自选称号优先，否则蛋糕生涯称号，否则 '-'。"""
+        ids = [str(u) for u in user_ids]
+        if not ids:
+            return {}
+        selected = await self.db_manager.get_selected_titles(ids)
+        cake = await self._get_cake_titles(ids)
+        display = {}
+        for uid in ids:
+            display[uid] = selected.get(uid) or cake.get(uid) or "-"
+        return display
+
     async def _check_permission(self, event: AstrMessageEvent, required_level: int) -> bool:
         if str(event.get_sender_id()) in self.admins_id:
             return True
@@ -2299,10 +2334,9 @@ class FavourManagerTool(Star):
         uniq = " (唯一)" if record and record.is_unique else ""
         
         name = await self._get_user_display_name(event, target_uid)
-        titles = await self._get_cake_titles([target_uid])
-        cake_title = titles.get(str(target_uid), "-")
+        title_display = (await self._get_title_display([target_uid])).get(str(target_uid), "-")
 
-        msg = f"🔍 用户：{name}\n🆔 ID：{target_uid}\n❤ 好感度：{fav}\n🍰 蛋糕称号：{cake_title}\n🔗 关系：{rel}{uniq}"
+        msg = f"🔍 用户：{name}\n🆔 ID：{target_uid}\n❤ 好感度：{fav}\n🍰 称号：{title_display}\n🔗 关系：{rel}{uniq}"
         yield event.plain_result(msg)
 
     @filter.command("查询当前好感度", alias={'查当前好感度', '查询本群好感度', '查本群好感度', '查群好感度', '查询群好感度', '当前好感度', '本群好感度', '群好感度'})
@@ -2337,16 +2371,16 @@ class FavourManagerTool(Star):
         page_records = records[start_idx:end_idx]
             
         headers = [
-            "| 用户昵称 | 用户ID | 好感度 | 关系 | 唯一 | 蛋糕称号 |",
+            "| 用户昵称 | 用户ID | 好感度 | 关系 | 唯一 | 称号 |",
             "| :--- | :--- | :---: | :---: | :---: | :--- |"
         ]
         rows = []
-        titles = await self._get_cake_titles([r.user_id for r in page_records])
+        title_map = await self._get_title_display([r.user_id for r in page_records])
         for r in page_records:
             name = self._escape_markdown(await self._get_user_display_name(event, r.user_id))
             rel = self._escape_markdown(r.relationship or "无")
             uniq = "是" if r.is_unique else "否"
-            cake = titles.get(str(r.user_id), "-")
+            cake = title_map.get(str(r.user_id), "-")
             rows.append(f"| {name} | {r.user_id} | {r.favour} | {rel} | {uniq} | {cake} |")
             
         title = f"📊 当前会话好感度列表 (SID: {self._escape_markdown(session_id)}) - 第 {page}/{total_pages} 页"
@@ -2373,13 +2407,13 @@ class FavourManagerTool(Star):
             session_groups[r.session_id].append(r)
             
         headers = [
-            "| 用户ID | 好感度 | 关系 | 唯一 | 蛋糕称号 |",
+            "| 用户ID | 好感度 | 关系 | 唯一 | 称号 |",
             "| :--- | :---: | :---: | :---: | :--- |"
         ]
         rows = []
         hidden_private_sessions = 0
 
-        # 每个会话先排序并构建展示列表，收集需查询蛋糕称号的 uid 一次批量取
+        # 每个会话先排序并构建展示列表，收集需查询称号的 uid 一次批量取
         display_map = []  # (sid, group_records, display_list)
         shown_uids = []
         for sid, group_records in session_groups.items():
@@ -2397,7 +2431,7 @@ class FavourManagerTool(Star):
                 display_list = group_records[:5] + [None] + group_records[-5:]
             display_map.append((sid, group_records, display_list))
             shown_uids.extend(str(r.user_id) for r in display_list if r is not None)
-        titles = await self._get_cake_titles(shown_uids)
+        title_map = await self._get_title_display(shown_uids)
 
         for sid, group_records, display_list in display_map:
             rows.append(f"\n## 会话: {self._escape_markdown(str(sid))} (共 {len(group_records)} 人)")
@@ -2410,7 +2444,7 @@ class FavourManagerTool(Star):
                 else:
                     rel = self._escape_markdown(r.relationship or "无")
                     uniq = "是" if r.is_unique else "否"
-                    cake = titles.get(str(r.user_id), "-")
+                    cake = title_map.get(str(r.user_id), "-")
                     rows.append(f"| {r.user_id} | {r.favour} | {rel} | {uniq} | {cake} |")
         
         if hidden_private_sessions > 0:
@@ -2443,15 +2477,15 @@ class FavourManagerTool(Star):
         page_records = records[start_idx:end_idx]
             
         headers = [
-            "| 用户ID | 好感度 | 关系 | 唯一 | 蛋糕称号 |",
+            "| 用户ID | 好感度 | 关系 | 唯一 | 称号 |",
             "| :--- | :---: | :---: | :---: | :--- |"
         ]
         rows = []
-        titles = await self._get_cake_titles([r.user_id for r in page_records])
+        title_map = await self._get_title_display([r.user_id for r in page_records])
         for r in page_records:
             rel = self._escape_markdown(r.relationship or "无")
             uniq = "是" if r.is_unique else "否"
-            cake = titles.get(str(r.user_id), "-")
+            cake = title_map.get(str(r.user_id), "-")
             rows.append(f"| {r.user_id} | {r.favour} | {rel} | {uniq} | {cake} |")
             
         title = f"📊 全局好感度记录 - 第 {page}/{total_pages} 页"
@@ -2824,6 +2858,64 @@ class FavourManagerTool(Star):
         
         yield event.plain_result("\n".join(lines))
 
+    # ================= 3.6 称号系统 =================
+
+    @filter.command("称号", alias={'选择称号', '更换称号', '我的称号'})
+    async def select_title(self, event: AstrMessageEvent, title: str = ""):
+        """查看/更换我的称号：称号 [称号名或编号]。无参数列出已拥有称号，带参数更换。"""
+        user_id = str(event.get_sender_id())
+        session_id = self._get_session_id(event)
+        record = await self.db_manager.get_favour(user_id, session_id)
+        fav = record.favour if record else 0
+        unlocked_fav = self._unlocked_favour_titles(fav)
+        cake = await self._get_cake_titles([user_id])
+        cake_title = cake.get(user_id)
+
+        available = list(unlocked_fav)
+        if cake_title and cake_title not in available:
+            available.append(cake_title)
+        # 去重保序
+        seen = set()
+        available = [x for x in available if not (x in seen or seen.add(x))]
+
+        current = await self.db_manager.get_selected_title(user_id)
+
+        if not title:
+            if not available:
+                yield event.plain_result(
+                    "🎖 你还没有获得任何称号。\n好感度达到一定值可解锁专属称号，发送「称号帮助」查看解锁方式。"
+                )
+                return
+            lines = ["🎖 你拥有的称号："]
+            for i, t in enumerate(available, 1):
+                marker = "（使用中）" if t == current else ""
+                lines.append(f"{i}. {t}{marker}")
+            lines.append("\n回复「称号 <名称或编号>」更换；「称号帮助」查看全部称号与解锁方式。")
+            yield event.plain_result("\n".join(lines))
+            return
+
+        matched = None
+        if title.strip().isdigit() and 1 <= int(title.strip()) <= len(available):
+            matched = available[int(title.strip()) - 1]
+        elif title.strip() in available:
+            matched = title.strip()
+        if matched is None:
+            yield event.plain_result("没有这个称号哦。回复「称号」查看你拥有的称号。")
+            return
+        await self.db_manager.set_selected_title(user_id, matched)
+        yield event.plain_result(f"🎖 已将称号更换为：{matched}")
+
+    @filter.command("称号帮助", alias={'称号说明', '称号列表'})
+    async def title_help(self, event: AstrMessageEvent):
+        """列出全部称号及解锁方式。"""
+        lines = ["🎖 称号系统帮助", "", "好感度称号（达到对应好感度即解锁）："]
+        for threshold, name in FAVOUR_TITLES:
+            cond = f"好感度 ≥ {threshold}" if threshold >= 0 else f"好感度 ≤ {threshold}"
+            lines.append(f"· {name}：{cond}")
+        lines.append("", "蛋糕称号：喂蛋糕获得的生涯称号（如 海啸级投喂手 等）", "")
+        lines.append("使用「称号」查看并更换你的称号。")
+        yield event.plain_result("\n".join(lines))
+
     # ================= 4. 帮助类型 =================
 
     @filter.command("好感度帮助", alias={'查看好感度帮助'})
@@ -2836,6 +2928,8 @@ class FavourManagerTool(Star):
         msg.append("\n[通用命令]")
         msg.append("- 查询好感度 [@用户]")
         msg.append("- 查询当前好感度 [页码]")
+        msg.append("- 称号")
+        msg.append("- 称号帮助")
         msg.append("- 好感度指令帮助")
 
         if is_superuser:

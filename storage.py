@@ -56,6 +56,15 @@ class FavourRecord(SQLModel, table=True):
     last_interaction: datetime = Field(default_factory=datetime.now)  # 最后互动时间，用于衰减
 
 
+class FavourTitle(SQLModel, table=True):
+    """用户选中的称号（全局属性，不按会话隔离）"""
+    __tablename__ = "user_titles"
+    __table_args__ = {"extend_existing": True}
+
+    user_id: str = Field(primary_key=True)
+    selected_title: str = Field(default="")
+
+
 class FavourDBManager:
     """基于SQLite的好感度数据库管理器"""
     def __init__(self, data_dir: Path, min_val: int = -100, max_val: int = 100):
@@ -126,6 +135,12 @@ class FavourDBManager:
                             await conn.execute(text("ALTER TABLE favour_records ADD COLUMN username VARCHAR(128) DEFAULT ''"))
                             logger.info("数据库升级完成（username）。")
                             #################
+
+                # 称号表（用户全局属性：当前选中的称号）
+                await conn.execute(text(
+                    "CREATE TABLE IF NOT EXISTS user_titles ("
+                    "user_id TEXT PRIMARY KEY, selected_title TEXT DEFAULT '')"
+                ))
 
                 self._initialized = True
                 logger.info(f"好感度数据库已初始化: {self.db_path}")
@@ -289,6 +304,62 @@ class FavourDBManager:
                 return True
         except Exception as e:
             logger.error(f"更新数据库失败: {str(e)}")
+            return False
+
+    @_retry_on_locked()
+    async def get_selected_title(self, user_id: str) -> str:
+        """查询用户当前选中的称号（全局），未设置返回空串。"""
+        await self.init_db()
+        if not is_valid_userid(user_id):
+            return ""
+        try:
+            async with self.async_session() as session:
+                stmt = select(FavourTitle).where(FavourTitle.user_id == user_id)
+                result = await session.execute(stmt)
+                rec = result.scalars().first()
+                return rec.selected_title if rec else ""
+        except Exception as e:
+            logger.error(f"查询称号失败: {e}")
+            return ""
+
+    @_retry_on_locked()
+    async def get_selected_titles(self, user_ids) -> Dict[str, str]:
+        """批量查询用户选中的称号：uid -> selected_title。"""
+        await self.init_db()
+        ids = [str(u) for u in user_ids]
+        result = {}
+        if not ids:
+            return result
+        try:
+            async with self.async_session() as session:
+                stmt = select(FavourTitle).where(FavourTitle.user_id.in_(ids))
+                recs = (await session.execute(stmt)).scalars().all()
+                for rec in recs:
+                    if rec.selected_title:
+                        result[rec.user_id] = rec.selected_title
+        except Exception as e:
+            logger.error(f"批量查询称号失败: {e}")
+        return result
+
+    @_retry_on_locked()
+    async def set_selected_title(self, user_id: str, title: str) -> bool:
+        """写入用户选中的称号（全局），覆盖旧值。"""
+        await self.init_db()
+        if not is_valid_userid(user_id):
+            return False
+        try:
+            async with self.async_session() as session:
+                stmt = select(FavourTitle).where(FavourTitle.user_id == user_id)
+                rec = (await session.execute(stmt)).scalars().first()
+                if rec:
+                    rec.selected_title = title
+                    session.add(rec)
+                else:
+                    session.add(FavourTitle(user_id=user_id, selected_title=title))
+                await session.commit()
+                return True
+        except Exception as e:
+            logger.error(f"写入称号失败: {e}")
             return False
 
     @_retry_on_locked()
