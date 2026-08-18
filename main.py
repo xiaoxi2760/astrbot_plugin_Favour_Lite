@@ -2912,7 +2912,9 @@ class FavourManagerTool(Star):
         for threshold, name in FAVOUR_TITLES:
             cond = f"好感度 ≥ {threshold}" if threshold >= 0 else f"好感度 ≤ {threshold}"
             lines.append(f"· {name}：{cond}")
-        lines.append("", "蛋糕称号：喂蛋糕获得的生涯称号（如 海啸级投喂手 等）", "")
+        lines.append("")
+        lines.append("蛋糕称号：喂蛋糕获得的生涯称号（如 海啸级投喂手 等）")
+        lines.append("")
         lines.append("使用「称号」查看并更换你的称号。")
         yield event.plain_result("\n".join(lines))
 
