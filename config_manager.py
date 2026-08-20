@@ -57,32 +57,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         ],
     },
 
-    # 主动搭话配置
-    "active_chat": {
-        "enabled": False,
-        "time_start": "08:00",     # 允许搭话的时间范围起点
-        "time_end": "23:30",       # 允许搭话的时间范围终点
-        "interval_hours": 2,       # 每 N 小时检查一次
-        "max_sessions_per_round": 3,  # 每轮最多触发几个会话，0=不限制
-        # 会话级黑白名单：控制哪些会话允许/禁止主动搭话
-        "blocked_sessions": [],    # 黑名单：这些会话不会被主动搭话
-        "allowed_sessions": [],    # 白名单：为空=全部允许；非空=仅允许列出的会话
-        # 按好感度区间分配触发概率（百分比），按 min_favour 从高到低匹配
-        "rules": [
-            {"min_favour": 90, "max_favour": 100, "probability": 15},
-            {"min_favour": 70, "max_favour": 89,  "probability": 8},
-            {"min_favour": 50, "max_favour": 69,  "probability": 3},
-        ],
-        # LLM 搭话提示词。可用占位符：{current_time}=当前时间, {last_interaction_ago}=距上次互动时长, {favour}=好感度, {relationship}=关系, {user_name}=用户ID
-        "llm_prompt": (
-            "现在时间是 {current_time}，距离上次互动已经 {last_interaction_ago}。\n"
-            "请以自然、不经意的方式向用户 {user_name} 发起聊天。\n"
-            "当前好感度：{favour}，关系：{relationship}。\n"
-            "请按照你的人设对用户发起对话\n"
-            "注意：这是一条系统触发的主动搭话，不是用户要求你发送的。"
-        ),
-    },
-
     # 好感度查询权限开关
     "query_permission": {
         "group_normal_user": True,   # 群聊普通用户可否查询
@@ -248,18 +222,10 @@ class PluginConfigManager:
             fd = config["favour_decay"]
             if "advanced_rules" in fd:
                 fd["advanced_rules"] = self._normalize_json_field(
-                    fd["advanced_rules"], 
+                    fd["advanced_rules"],
                     DEFAULT_CONFIG["favour_decay"]["advanced_rules"]
                 )
-        
-        if "active_chat" in config and isinstance(config["active_chat"], dict):
-            ac = config["active_chat"]
-            if "rules" in ac:
-                ac["rules"] = self._normalize_json_field(
-                    ac["rules"],
-                    DEFAULT_CONFIG["active_chat"]["rules"]
-                )
-        
+
         return config
 
     def _migrate_old_config(self, old: Dict[str, Any]) -> Dict[str, Any]:
@@ -297,12 +263,6 @@ class PluginConfigManager:
             # 旧版没有 mode 字段 → 默认 linear
             if "mode" not in old_decay:
                 new_config["favour_decay"]["mode"] = "linear"
-
-        # 主动搭话配置
-        if "active_chat" in old:
-            for k in new_config["active_chat"]:
-                if k in old["active_chat"]:
-                    new_config["active_chat"][k] = old["active_chat"][k]
 
         # 查询权限配置
         if "query_permission" in old:

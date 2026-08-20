@@ -61,7 +61,7 @@ $('btn-save').onclick = () => save();
 
 // ===== 渲染入口 =====
 function show(t) {
-  const r = { basic, levels, decay, active, perm, adv, cold, data, migrate, backup };
+  const r = { basic, levels, decay, perm, adv, cold, data, migrate, backup };
   const bodyEl = document.getElementById('body');
   if (!bodyEl) return;
   bodyEl.innerHTML = (r[t] || (() => '')).call(this);
@@ -101,8 +101,6 @@ function bindAll() {
       else if (act === 'del-level') { delLevel(+el.dataset.idx); show('levels'); }
       else if (act === 'add-adv')   { addAdv(); show('decay'); }
       else if (act === 'del-adv')   { delAdv(+el.dataset.idx); show('decay'); }
-      else if (act === 'add-act')   { addAct(); show('active'); }
-      else if (act === 'del-act')   { delAct(+el.dataset.idx); show('active'); }
       else if (act === 'add-list')  { addList(el.dataset.path); show(currentTab()); }
       else if (act === 'del-list')  { delList(el.dataset.path, +el.dataset.idx); show(currentTab()); }
     };
@@ -119,8 +117,6 @@ function addLevel() { const l = g('favour_levels', []); const last = l.length > 
 function delLevel(i) { g('favour_levels', []).splice(i, 1); }
 function addAdv() { g('favour_decay.advanced_rules', []).push({ min_favour: 0, max_favour: 100, inactive_days: 7, decay_amount: 5, floor: null }); }
 function delAdv(i) { g('favour_decay.advanced_rules', []).splice(i, 1); }
-function addAct() { g('active_chat.rules', []).push({ min_favour: 0, max_favour: 100, probability: 5 }); }
-function delAct(i) { g('active_chat.rules', []).splice(i, 1); }
 function addList(p) { g(p, []).push(''); }
 function delList(p, i) { g(p, []).splice(i, 1); }
 
@@ -205,28 +201,6 @@ function decay() {
     num2('favour_decay.floor_favour', '全局衰减底线（留空=好感度下限）') +
     body;
 }
-
-// ===== Tab: 搭话 =====
-function active() {
-  const rules = g('active_chat.rules', []);
-  return sec('主动搭话') +
-    row(chk('active_chat.enabled', '启用主动搭话', '根据好感度概率主动发起对话'), '') +
-    row(txt2('active_chat.time_start', '开始时间 HH:MM'), txt2('active_chat.time_end', '结束时间 HH:MM')) +
-    row(num2('active_chat.interval_hours', '检查间隔（小时）'), num2('active_chat.max_sessions_per_round', '每轮最多触发会话数（0=不限）')) +
-    card('概率规则（按好感度区间，百分比）',
-      lrHeader(['最低好感', '最高好感', '概率%'], ['80px', '80px', '70px']) +
-      (rules.length ? rules.map((r, i) => lrRow([
-        { p: `act-min-${i}`, t: 'number', v: r.min_favour, ph: '最低好感', s: 'width:80px' },
-        { p: `act-max-${i}`, t: 'number', v: r.max_favour, ph: '最高好感', s: 'width:80px' },
-        { p: `act-prob-${i}`, t: 'number', v: r.probability, ph: '概率%', s: 'width:70px' }
-      ], 'del-act', i)).join('') : '<p class="dim">暂无规则</p>') +
-      '<button class="btn-sm btn-add" data-act="add-act" style="margin-top:6px">+ 添加规则</button>'
-    ) +
-    card('搭话会话黑名单', listEd('active_chat.blocked_sessions', g('active_chat.blocked_sessions', []), '会话ID')) +
-    card('搭话会话白名单（空=全部允许）', listEd('active_chat.allowed_sessions', g('active_chat.allowed_sessions', []), '会话ID')) +
-    txt('active_chat.llm_prompt', 'LLM 搭话提示词 <span class="tip-icon" data-tip="占位符说明（点击固定提示）：\n{current_time} \u2014 当前系统时间\n{last_interaction_ago} \u2014 距上次互动时长\n{favour} \u2014 当前好感度数值\n{relationship} \u2014 当前关系\n{user_name} \u2014 用户 ID">?</span>', 6, '占位符：{current_time}, {last_interaction_ago}, {favour}, {relationship}, {user_name}');
-}
-
 // ===== Tab: 权限 =====
 function perm() {
   return sec('查询权限') +
@@ -1033,15 +1007,6 @@ function collect() {
       advs.push({ min_favour: +m.value || 0, max_favour: +($('adv-max-' + i)?.value) || 0, inactive_days: +($('adv-days-' + i)?.value) || 7, decay_amount: +($('adv-amt-' + i)?.value) || 5, floor: fl === '' ? null : (+fl || 0) });
     }
     if (advs.length) s('favour_decay.advanced_rules', advs);
-  }
-  if (tab === 'active') {
-    const acts = [];
-    for (let i = 0; ; i++) {
-      const m = $('act-min-' + i);
-      if (!m) break;
-      acts.push({ min_favour: +m.value || 0, max_favour: +($('act-max-' + i)?.value) || 0, probability: +($('act-prob-' + i)?.value) || 0 });
-    }
-    if (acts.length) s('active_chat.rules', acts);
   }
 }
 

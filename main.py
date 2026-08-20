@@ -1,13 +1,8 @@
 # main.py
 import re
 import traceback
-import shutil
-import hashlib
-import aiohttp
-import random
-import string
 from pathlib import Path
-from typing import Dict, List, AsyncGenerator, Optional, Tuple, Any, Set
+from typing import Dict, List, Optional, Set
 from datetime import datetime, timedelta
 import asyncio
 
@@ -99,19 +94,7 @@ class FavourManagerTool(Star):
         self.decay_floor = decay_conf.get("floor_favour")  # None = 使用 min_favour_value
         self.decay_advanced_rules = decay_conf.get("advanced_rules", [])
         self.decay_conf = decay_conf  # 保存完整配置供 storage 使用
-        
-        # 主动搭话配置
-        active_conf = self.config.get("active_chat", {})
-        self.active_chat_enabled = active_conf.get("enabled", False)
-        self.active_chat_time_start = active_conf.get("time_start", "08:00")
-        self.active_chat_time_end = active_conf.get("time_end", "23:30")
-        self.active_chat_interval = active_conf.get("interval_hours") or 2
-        self.active_chat_max_sessions = active_conf.get("max_sessions_per_round") or 0
-        self.active_chat_blocked_sessions = active_conf.get("blocked_sessions") or []
-        self.active_chat_allowed_sessions = active_conf.get("allowed_sessions") or []
-        self.active_chat_rules = active_conf.get("rules", [])
-        self.active_chat_llm_prompt = active_conf.get("llm_prompt", "")
-        
+
         # 备份配置
         backup_conf = self.config.get("backup", {})
         self.backup_enabled = backup_conf.get("enabled", True)
@@ -133,12 +116,6 @@ class FavourManagerTool(Star):
         
         # 用户名缓存：避免每条消息都写入数据库更新用户名
         self._username_cache: Dict[str, str] = {}  # key: "record_id" -> username
-        
-        # 存储每个会话的最近事件，供主动搭话使用
-        self._last_events: Dict[str, AstrMessageEvent] = {}
-        # 平台级缓存：{平台前缀: {self_id, platform_meta}}，兜底无会话事件时的搭话
-        #################
-        self._platform_cache: Dict[str, dict] = {}
 
         self._validate_config()
         
@@ -158,19 +135,11 @@ class FavourManagerTool(Star):
         
         # 启动衰减调度器
         self._decay_task: Optional[asyncio.Task] = None
-        self._active_chat_task: Optional[asyncio.Task] = None
         if self.decay_enabled:
             logger.debug(f"[初始化] 启动好感度衰减调度器（模式={self.decay_mode}，{self.decay_inactive_days}天无互动触发）")
             self._decay_task = asyncio.create_task(self._decay_scheduler())
         else:
             logger.debug("[初始化] 好感度衰减已禁用")
-        
-        # 启动主动搭话调度器
-        if self.active_chat_enabled:
-            logger.debug(f"[初始化] 启动主动搭话调度器（间隔={self.active_chat_interval}h，时段={self.active_chat_time_start}-{self.active_chat_time_end}，规则数={len(self.active_chat_rules)}）")
-            self._active_chat_task = asyncio.create_task(self._active_chat_scheduler())
-        else:
-            logger.debug("[初始化] 主动搭话已禁用")
 
         # 启动备份调度器
         self._backup_task: Optional[asyncio.Task] = None
@@ -245,7 +214,7 @@ class FavourManagerTool(Star):
     async def terminate(self):
         """插件卸载/重载时取消所有调度器任务，防止旧任务泄漏。"""
         #################
-        for task in (self._decay_task, self._active_chat_task, self._backup_task):
+        for task in (self._decay_task, self._backup_task):
             if task and not task.done():
                 task.cancel()
                 try:
@@ -253,7 +222,6 @@ class FavourManagerTool(Star):
                 except asyncio.CancelledError:
                     pass
         self._decay_task = None
-        self._active_chat_task = None
         self._backup_task = None
         logger.info("好感度插件调度器已全部取消。")
         #################
@@ -356,243 +324,6 @@ class FavourManagerTool(Star):
                 logger.error(f"衰减调度器出错: {e}\n{traceback.format_exc()}")
                 await asyncio.sleep(600)  # 出错后等10分钟再试
 
-    async def _active_chat_scheduler(self) -> None:
-        """主动搭话调度器：按配置的间隔，在允许时间段内按概率向用户主动搭话。
-        
-        规则：
-        - 同一会话中，按好感度从高到低依次计算概率。
-        - 同好感度成员随机排列。
-        - 一旦某个用户触发搭话，该会话本轮立即停止。
-        - 发送时进行分段处理（模拟被动回复的消息管线）。
-        """
-        import random as _random
-        while True:
-            try:
-                interval_seconds = max(1, self.active_chat_interval) * 3600
-                await asyncio.sleep(interval_seconds)
-                if not self.active_chat_enabled:
-                    continue
-                
-                # 检查时间范围
-                now = datetime.now()
-                try:
-                    start_h, start_m = map(int, self.active_chat_time_start.split(":"))
-                    end_h, end_m = map(int, self.active_chat_time_end.split(":"))
-                except (ValueError, AttributeError):
-                    logger.warning("主动搭话时间格式错误，跳过本轮。")
-                    continue
-                
-                start_minutes = start_h * 60 + start_m
-                end_minutes = end_h * 60 + end_m
-                now_minutes = now.hour * 60 + now.minute
-                
-                if now_minutes < start_minutes or now_minutes > end_minutes:
-                    logger.debug(f"[搭话调度器] 当前时间 {now.strftime('%H:%M')} 不在允许时段 {self.active_chat_time_start}-{self.active_chat_time_end}，跳过。")
-                    continue  # 不在允许的时间范围内
-                
-                # 获取所有有过互动的用户记录
-                all_records = await self.db_manager.get_global_records()
-                non_global = await self.db_manager.get_non_global_records()
-                all_records.extend(non_global)
-                
-                if not all_records:
-                    logger.debug("[搭话调度器] 无用户记录，跳过本轮。")
-                    continue
-                
-                # 按会话分组
-                session_groups: Dict[str, List[FavourRecord]] = {}
-                for record in all_records:
-                    sid = record.session_id
-                    
-                    # 搭话会话级黑白名单过滤
-                    if self.active_chat_allowed_sessions and sid not in self.active_chat_allowed_sessions:
-                        continue
-                    if sid in self.active_chat_blocked_sessions:
-                        continue
-                    
-                    # 过滤冷暴力/拉黑用户
-                    user_id = record.user_id
-                    blacklist_key = f"{sid}:{user_id}" if not self._is_shared_session(sid) else user_id
-                    if blacklist_key in self.auto_blacklisted:
-                        continue
-                    cv_key = self._get_cold_violence_key(user_id, sid)
-                    if cv_key in self.cold_violence_users:
-                        if datetime.now() < self.cold_violence_users[cv_key]:
-                            continue
-                    
-                    if sid not in session_groups:
-                        session_groups[sid] = []
-                    session_groups[sid].append(record)
-                
-                # 按好感度区间匹配概率规则（从高到低排序）
-                rules_sorted = sorted(self.active_chat_rules or [], 
-                                      key=lambda r: r.get("min_favour", 0), reverse=True)
-                
-                # 对每个会话单独处理
-                total_sessions = len(session_groups)
-                total_candidates = sum(len(r) for r in session_groups.values())
-                max_sessions = self.active_chat_max_sessions if self.active_chat_max_sessions > 0 else total_sessions
-                logger.debug(f"[搭话调度器] 共 {total_sessions} 个会话，{total_candidates} 个候选用户，每轮上限 {max_sessions} 个会话，开始逐会话检查。")
-                
-                # 随机打乱会话顺序，避免固定会话总是优先被搭话
-                session_items = list(session_groups.items())
-                _random.shuffle(session_items)
-                
-                triggered_sessions = 0
-                for session_id, records in session_items:
-                    # 检查是否已达本轮上限
-                    if triggered_sessions >= max_sessions:
-                        logger.debug(f"[搭话调度器] 已达本轮上限 {max_sessions} 个会话，停止。")
-                        break
-                    # 按好感度降序排列，同好感度随机打乱
-                    records.sort(key=lambda r: r.favour, reverse=True)
-                    # 对同好感度的用户进行随机排列（Fisher-Yates 思想：分组后打乱）
-                    i = 0
-                    while i < len(records):
-                        j = i
-                        while j < len(records) and records[j].favour == records[i].favour:
-                            j += 1
-                        if j - i > 1:
-                            # 同好感度组：随机打乱
-                            group = records[i:j]
-                            _random.shuffle(group)
-                            records[i:j] = group
-                        i = j
-                    
-                    # 依次尝试搭话，触发即停
-                    triggered = False
-                    for record in records:
-                        if triggered:
-                            break
-                        
-                        user_id = record.user_id
-                        
-                        # 匹配好感度区间概率
-                        matched_prob = None
-                        for rule in rules_sorted:
-                            r_min = rule.get("min_favour", -999)
-                            r_max = rule.get("max_favour", 999)
-                            if r_min <= record.favour <= r_max:
-                                matched_prob = rule.get("probability", 0)
-                                break
-                        
-                        if matched_prob is None or matched_prob <= 0:
-                            continue
-                        
-                        # 按概率触发
-                        if _random.randint(1, 100) <= matched_prob:
-                            triggered = True
-                            triggered_sessions += 1
-                            
-                            # 使用合成事件推入框架管线（替代直接调用 LLM + send_message）
-                            # 好处：persona、上下文、分段插件全部自动生效
-                            try:
-                                from astrbot.core.platform.astrbot_message import AstrBotMessage, MessageMember
-                                from astrbot.core.platform.message_type import MessageType
-
-                                last_event = self._last_events.get(session_id)
-                                # 平台级缓存兜底：无会话事件时用同平台其他会话的信息
-                                #################
-                                platform = session_id.split(":")[0] if ":" in session_id else session_id
-                                platform_info = self._platform_cache.get(platform, {})
-                                
-                                if not last_event and not platform_info:
-                                    logger.debug(f"[搭话调度器] 会话 {session_id} 无事件引用且无平台缓存，跳过。")
-                                    continue
-                                #################
-                                
-                                # 获取当前会话的 persona 信息用于构建提示词
-                                persona_mgr = self.context.persona_manager
-                                persona = await persona_mgr.get_default_persona_v3(umo=session_id) if persona_mgr else None
-                                sys_prompt = persona.get("prompt", "") if persona else ""
-                                
-                                # 构建搭话指令
-                                rel = record.relationship or "无"
-                                current_time_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                last_ago = self._calc_last_interaction_ago(record.last_interaction)
-                                
-                                if self.active_chat_llm_prompt:
-                                    prompt = self.active_chat_llm_prompt.format(
-                                        current_time=current_time_str,
-                                        last_interaction_ago=last_ago,
-                                        favour=record.favour,
-                                        relationship=rel,
-                                        user_name=user_id
-                                    )
-                                else:
-                                    prompt = (
-                                        f"现在时间是 {current_time_str}，距离上次互动已经 {last_ago}。"
-                                        f"请以自然、不经意的方式向用户 {user_id} 发起聊天。"
-                                        f"当前好感度：{record.favour}，关系：{rel}。"
-                                        f"回复简短自然，不超过50字。不要使用任何标签或格式标记。"
-                                        f"注意：这是一条系统触发的主动搭话，请不要让用户察觉是你主动找过来的。"
-                                    )
-                                
-                                synth_msg = AstrBotMessage()
-                                # 优先用会话事件，其次用平台缓存推断
-                                #################
-                                if last_event:
-                                    synth_msg.type = last_event.message_obj.type if hasattr(last_event.message_obj, 'type') else MessageType.FRIEND_MESSAGE
-                                    synth_msg.self_id = getattr(last_event.message_obj, 'self_id', '')
-                                    last_group_id = getattr(last_event.message_obj, 'group_id', '')
-                                    _platform_meta = last_event.platform_meta
-                                else:
-                                    # 从 session_id 推断消息类型
-                                    if 'GroupMessage' in str(session_id):
-                                        synth_msg.type = MessageType.GROUP_MESSAGE
-                                    else:
-                                        synth_msg.type = MessageType.FRIEND_MESSAGE
-                                    synth_msg.self_id = platform_info.get("self_id", "")
-                                    last_group_id = session_id.split(":")[2] if 'GroupMessage' in str(session_id) and session_id.count(":") >= 2 else ""
-                                    _platform_meta = platform_info.get("platform_meta")
-                                #################
-                                synth_msg.session_id = session_id
-                                synth_msg.message_id = f"active_chat_{datetime.now().timestamp()}"
-                                synth_msg.sender = MessageMember(user_id=user_id, nickname=user_id)
-                                synth_msg.message = [Plain(text=prompt)]
-                                synth_msg.message_str = prompt
-                                synth_msg.raw_message = None
-                                synth_msg.timestamp = int(datetime.now().timestamp())
-                                if last_group_id:
-                                    synth_msg.group_id = last_group_id
-                                
-                                # 构造合成事件
-                                synth_event = AstrMessageEvent(
-                                    message_str=prompt,
-                                    message_obj=synth_msg,
-                                    platform_meta=_platform_meta,
-                                    session_id=session_id,
-                                )
-                                #################
-                                # 关键标志：让管线正常处理（触发 LLM + 分段等）
-                                synth_event.is_at_or_wake_command = True
-                                synth_event.call_llm = False  # False = 允许 LLM 调用
-                                # 标记为搭话合成事件，供 inject_favour_prompt / update_data 识别
-                                synth_event.set_extra("_is_active_chat_synthetic", True)
-                                synth_event.set_extra("_active_chat_target_uid", user_id)
-                                
-                                # aiocqhttp 平台走事件队列（完整管线：persona + 分段）;
-                                # 非 aiocqhttp 平台（微信等）直接调 LLM + 发送，避免合成事件不被适配器识别
-                                #################
-                                if platform.startswith("aiocqhttp"):
-                                    self.context.get_event_queue().put_nowait(synth_event)
-                                    logger.info(f"[搭话调度器] 合成事件已推入管线 → 目标 {user_id} (会话 {session_id})，概率 {matched_prob}%")
-                                else:
-                                    # 直接调 LLM 生成搭话内容并分段发送
-                                    logger.info(f"[搭话调度器] 非QQ平台直接发送 → 目标 {user_id} (会话 {session_id})，概率 {matched_prob}%")
-                                    await self._send_direct_active_chat(session_id, prompt, record, user_id, sys_prompt)
-                                #################
-                            except Exception as send_err:
-                                logger.warning(f"主动搭话失败 ({user_id}): {send_err}")
-                
-                logger.debug(f"[搭话调度器] 本轮完成：{triggered_sessions}/{total_sessions} 个会话触发了搭话。")
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"主动搭话调度器出错: {e}\n{traceback.format_exc()}")
-                await asyncio.sleep(600)
-
     async def _backup_scheduler(self):
         """周期性自动备份调度器"""
         try:
@@ -609,167 +340,6 @@ class FavourManagerTool(Star):
                 await asyncio.sleep(self.backup_interval_hours * 3600)
         except asyncio.CancelledError:
             logger.debug("[自动备份] 调度器已取消")
-
-    async def _send_direct_active_chat(self, session_id: str, prompt: str,
-                                        record, user_id: str, sys_prompt: str) -> None:
-        """非QQ平台直接调LLM生成搭话内容并发送（绕过合成事件管线）。"""
-        #################
-        try:
-            from astrbot.api.provider import ProviderRequest
-            req = ProviderRequest(
-                prompt=prompt,
-                system_prompt=sys_prompt or "",
-                image_urls=None,
-            )
-            llm_response = await self.context.llm_manager.get_response(req, session_id)
-            if llm_response and llm_response.completion_text:
-                await self._send_active_chat_message(
-                    session_id, llm_response.completion_text,
-                    user_id, record.favour
-                )
-            else:
-                logger.warning(f"[搭话调度器] LLM 未生成回复 ({user_id})")
-        except Exception as e:
-            logger.error(f"直接搭话失败 ({user_id}): {e}")
-
-    async def _send_active_chat_message(self, session_id: str, reply_text: str,
-                                         user_id: str = "", favour: int = 0) -> None:
-        """分段发送主动搭话消息。
-        
-        将 LLM 生成的回复文本按自然句边界分割，逐段发送并加入延迟，
-        模拟被动回复经过 on_decorating_result 管线（如分段对话 pro 插件）的效果。
-        
-        分割策略：
-        - 优先在句末标点（。！？!?\n）处切断
-        - 保护代码块（```...```）和思考块（<think>...</think>）不被切断
-        - 单段最长约 200 字符，超出则在逗号/分号处软切断
-        - 段落间延迟：基于文本长度的线性延迟（0.5s 基础 + 0.1s/字）
-        """
-        if not reply_text or not reply_text.strip():
-            return
-        
-        logger.debug(f"[搭话分段] 准备向会话 {session_id} 发送搭话，原文 {len(reply_text)} 字。")
-        
-        # 第一步：按句末标点 + 换行做硬分割
-        hard_pattern = re.compile(r'([。！？!?\n]+)')
-        
-        raw_segments = []
-        # 保护块：```...``` 和 <think>...</think>
-        protected_regions = []
-        
-        def protect_blocks(text: str) -> str:
-            """将代码块和思考块替换为占位符"""
-            result = text
-            protected_regions.clear()
-            
-            # 保护代码块 ```
-            for match in re.finditer(r'```[\s\S]*?```', result):
-                placeholder = f"__PROTECTED_BLOCK_{len(protected_regions)}__"
-                protected_regions.append(match.group(0))
-                result = result.replace(match.group(0), placeholder, 1)
-            
-            # 保护思考块 <think>...</think>
-            for match in re.finditer(r'<think>[\s\S]*?</think>', result):
-                placeholder = f"__PROTECTED_BLOCK_{len(protected_regions)}__"
-                protected_regions.append(match.group(0))
-                result = result.replace(match.group(0), placeholder, 1)
-            
-            return result
-        
-        def restore_blocks(text: str) -> str:
-            """恢复占位符"""
-            result = text
-            for i, block in enumerate(protected_regions):
-                result = result.replace(f"__PROTECTED_BLOCK_{i}__", block)
-            return result
-        
-        protected_text = protect_blocks(reply_text)
-        
-        # 硬分割
-        parts = hard_pattern.split(protected_text)
-        current = ""
-        for part in parts:
-            if not part:
-                continue
-            if hard_pattern.fullmatch(part):
-                current += part
-                raw_segments.append(current)
-                current = ""
-            else:
-                current += part
-        if current:
-            raw_segments.append(current)
-        
-        # 第二步：合并过短的段，拆分过长的段
-        final_segments = []
-        buffer_text = ""
-        
-        for seg in raw_segments:
-            candidate = buffer_text + seg
-            if len(candidate) <= 200:
-                buffer_text = candidate
-            else:
-                if buffer_text:
-                    final_segments.append(buffer_text)
-                    buffer_text = ""
-                # 对长段进行软分割（在逗号/分号处）
-                remaining = seg
-                while len(remaining) > 200:
-                    # 在 150~200 字符范围内找逗号/分号
-                    split_pos = -1
-                    for pos in range(min(200, len(remaining) - 1), 150, -1):
-                        if remaining[pos] in ('，', ',', '；', ';', '、'):
-                            split_pos = pos + 1
-                            break
-                    if split_pos < 0:
-                        # 找不到合适的分割点，硬切在 200
-                        split_pos = 200
-                    final_segments.append(remaining[:split_pos])
-                    remaining = remaining[split_pos:]
-                if remaining:
-                    buffer_text = remaining
-        
-        if buffer_text:
-            final_segments.append(buffer_text)
-        
-        # 第三部：恢复保护块并发送
-        for i, seg in enumerate(final_segments):
-            restored = restore_blocks(seg).strip()
-            if not restored:
-                continue
-            
-            from astrbot.api.event import MessageChain
-            chain = MessageChain().message(restored)
-            try:
-                await self.context.send_message(session_id, chain)
-                if i < len(final_segments) - 1:
-                    # 段落间延迟
-                    delay = 0.5 + len(restored) * 0.1
-                    await asyncio.sleep(min(delay, 3.0))
-            except Exception as e:
-                logger.warning(f"主动搭话分段发送失败 (段{i+1}/{len(final_segments)}): {e}")
-        
-        logger.debug(f"[搭话分段] 发送完成，共 {len(final_segments)} 段。")
-        
-        # 将搭话消息记录进平台消息历史（确保后续 LLM 对话能引用它）
-        try:
-            parts = session_id.split(":", 2)
-            platform_id = parts[0] if len(parts) >= 1 else session_id
-            target_id = parts[2] if len(parts) >= 3 else session_id
-            # 取回复文本的缩写作为内容摘要
-            summary = reply_text[:200] if len(reply_text) > 200 else reply_text
-            await self.context.message_history_manager.insert(
-                platform_id=platform_id,
-                user_id=target_id,
-                content={"text": summary},
-                sender_id="astrbot",   # 标记为 Bot 发送
-                sender_name="Bot",
-            )
-            logger.debug(f"[搭话分段] 已记录到平台消息历史 ({platform_id}/{target_id})。")
-        except Exception as hist_err:
-            logger.debug(f"[搭话分段] 写入消息历史失败（非致命）: {hist_err}")
-
-    # ==================== Pages API ====================
 
     def _register_page_apis(self) -> None:
         """注册 WebUI Pages 所需的 API 端点。"""
@@ -1123,19 +693,6 @@ class FavourManagerTool(Star):
         try:
             if request.method == "GET":
                 sessions = await self.db_manager.list_sessions()
-                # 补充运行时缓存中见过但尚无 DB 记录的 UMO（如 webchat）
-                known = {s["session_id"] for s in sessions}
-                for sid in list(self._last_events.keys()):
-                    if sid and sid not in known:
-                        sessions.append({
-                            "session_id": sid,
-                            "count": 0,
-                            "platform": sid.split(":")[0] if ":" in sid else sid,
-                            "session_type": sid.split(":")[1] if sid.count(":") >= 1 else "",
-                            "session_target": sid.split(":")[2] if sid.count(":") >= 2 else "",
-                            "is_shared": ":" not in sid,
-                            "from_cache": True,
-                        })
                 return jsonify({"sessions": sessions})
 
             data = await request.get_json()
@@ -1297,17 +854,6 @@ class FavourManagerTool(Star):
         self.decay_advanced_rules = dc.get("advanced_rules", [])
         self.decay_conf = dc
 
-        ac = cfg.get("active_chat", {})
-        self.active_chat_enabled = ac.get("enabled", False)
-        self.active_chat_time_start = ac.get("time_start", "08:00")
-        self.active_chat_time_end = ac.get("time_end", "23:30")
-        self.active_chat_interval = ac.get("interval_hours") or 2
-        self.active_chat_max_sessions = ac.get("max_sessions_per_round") or 0
-        self.active_chat_blocked_sessions = ac.get("blocked_sessions") or []
-        self.active_chat_allowed_sessions = ac.get("allowed_sessions") or []
-        self.active_chat_rules = ac.get("rules", [])
-        self.active_chat_llm_prompt = ac.get("llm_prompt", "")
-
         qp = cfg.get("query_permission", {})
         self.query_group_normal = qp.get("group_normal_user", True)
         self.query_private_normal = qp.get("private_normal_user", True)
@@ -1352,28 +898,13 @@ class FavourManagerTool(Star):
             except asyncio.CancelledError:
                 pass
         self._decay_task = None
-        
-        # 2. 取消旧的搭话调度器
-        if self._active_chat_task and not self._active_chat_task.done():
-            self._active_chat_task.cancel()
-            try:
-                await self._active_chat_task
-            except asyncio.CancelledError:
-                pass
-        self._active_chat_task = None
-        
+
         # 3. 按新配置重启
         if self.decay_enabled:
             self._decay_task = asyncio.create_task(self._decay_scheduler())
             logger.info("好感度衰减调度器已按新配置重启。")
         else:
             logger.info("好感度衰减已禁用，调度器已停止。")
-        
-        if self.active_chat_enabled:
-            self._active_chat_task = asyncio.create_task(self._active_chat_scheduler())
-            logger.info(f"主动搭话调度器已按新配置重启（间隔 {self.active_chat_interval}h，{self.active_chat_time_start}-{self.active_chat_time_end}）。")
-        else:
-            logger.info("主动搭话已禁用，调度器已停止。")
 
         # 4. 取消旧的备份调度器
         if self._backup_task and not self._backup_task.done():
@@ -1801,25 +1332,6 @@ class FavourManagerTool(Star):
             session_id = self._get_session_id(event)
             user_id = str(event.get_sender_id())
 
-            # 存储事件引用，供主动搭话合成事件使用
-            if session_id and not self._is_shared_session(session_id):
-                self._last_events[session_id] = event
-                # 同时缓存平台级信息，兜底该平台其他无事件会话的搭话
-                #################
-                platform = session_id.split(":")[0] if ":" in session_id else session_id
-                if platform not in self._platform_cache and hasattr(event, 'platform_meta'):
-                    self._platform_cache[platform] = {
-                        "platform_meta": event.platform_meta,
-                        "self_id": getattr(event.message_obj, 'self_id', '') if hasattr(event, 'message_obj') else ''
-                    }
-            #################
-            # 搭话合成事件：使用目标用户的好感度数据
-            is_synthetic = event.get_extra("_is_active_chat_synthetic")
-            target_uid = event.get_extra("_active_chat_target_uid")
-            if is_synthetic and target_uid:
-                user_id = str(target_uid)
-                logger.debug(f"[搭话管线] 合成事件注入目标用户 {user_id} 的好感度/关系数据。")
-
             if not self._is_shared_session(session_id):
                 if self.allowed_sessions and session_id not in self.allowed_sessions:
                     logger.debug(f"[Prompt注入] 会话 {session_id} 不在白名单中，跳过。")
@@ -1872,7 +1384,7 @@ class FavourManagerTool(Star):
 
             # 异步更新用户名（供 WebUI 数据管理展示，使用缓存避免每条消息都写库）
             #################
-            if record and not is_synthetic:
+            if record:
                 try:
                     cache_key = str(record.id)
                     cached_name = self._username_cache.get(cache_key)
@@ -2082,12 +1594,7 @@ class FavourManagerTool(Star):
     async def handle_llm_response(self, event: AstrMessageEvent, resp: LLMResponse) -> None:
         """优先读取好感度标签（priority=10 确保在其他钩子之前执行）。"""
         if not hasattr(event, 'message_obj'): return
-        
-        # 搭话合成事件：不记录好感度变更（搭话不应影响好感度）
-        if event.get_extra("_is_active_chat_synthetic"):
-            logger.debug("[搭话管线] 搭话合成事件，跳过好感度标签解析。")
-            return
-        
+
         msg_id = str(event.message_obj.message_id)
         text = resp.completion_text
         
@@ -2186,12 +1693,7 @@ class FavourManagerTool(Star):
     @filter.on_decorating_result(priority=10)
     async def update_data(self, event: AstrMessageEvent):
         if not hasattr(event, 'message_obj'): return
-        
-        # 搭话合成事件：不更新好感度数据
-        if event.get_extra("_is_active_chat_synthetic"):
-            logger.debug("[搭话管线] 搭话合成事件，跳过好感度数据更新。")
-            return
-        
+
         msg_id = str(event.message_obj.message_id)
         data = self.pending_updates.pop(msg_id, None)
         
