@@ -61,16 +61,13 @@ $('btn-save').onclick = () => save();
 
 // ===== 渲染入口 =====
 function show(t) {
-  const r = { basic, levels, decay, perm, adv, cold, data, migrate, backup };
+  const r = { basic, levels, decay, perm, adv, cold, data, backup };
   const bodyEl = document.getElementById('body');
   if (!bodyEl) return;
   bodyEl.innerHTML = (r[t] || (() => '')).call(this);
   bindAll();
   if (t === 'data') {
     initDataTab();
-  }
-  if (t === 'migrate') {
-    initMigrateTab();
   }
   if (t === 'backup') {
     initBackupTab();
@@ -153,10 +150,6 @@ function basic() {
       sel('group_sort_by', '排序方式', [['default', '添加时间'], ['favour', '好感度'], ['nickname', '昵称'], ['userid', '用户ID']])
     ) +
     row(
-      chk('is_global_favour', '全局好感度', '跨群共享'),
-      chk('enable_relationship_table', '注入关系表', '向LLM展示会话关系')
-    ) +
-    row(
       chk('enable_cold_violence', '启用冷暴力', '连续降低触发'),
       num('min_favour_value', '好感度下限')
     ) +
@@ -219,9 +212,7 @@ function adv() {
     row(num2('advanced_config.admin_default_favour', '管理员初始好感度'), num2('advanced_config.level_threshold', '群等级阈值')) +
     row(num2('advanced_config.favour_increase_min', '上升最小值'), num2('advanced_config.favour_increase_max', '上升最大值')) +
     row(num2('advanced_config.favour_decrease_min', '下降最小值'), num2('advanced_config.favour_decrease_max', '下降最大值')) +
-    card('好感度特使（一行一个ID）', listEd('advanced_config.favour_envoys', g('advanced_config.favour_envoys', []), '用户ID')) +
-    card('会话黑名单', listEd('advanced_config.blocked_sessions', g('advanced_config.blocked_sessions', []), '会话ID')) +
-    card('会话白名单（空=全部启用）', listEd('advanced_config.allowed_sessions', g('advanced_config.allowed_sessions', []), '会话ID'));
+    card('好感度特使（一行一个ID）', listEd('advanced_config.favour_envoys', g('advanced_config.favour_envoys', []), '用户ID'));
 }
 
 // ===== Tab: 冷暴力 =====
@@ -238,7 +229,7 @@ function cold() {
 
 // ===== Tab: 数据管理 =====
 // 缓存已加载的原始数据，避免每次搜索/切换都重新请求 API
-let _dataCache = null;        // { global: [], non_global: [] }
+let _dataCache = null;        // { records: [...] }
 let _dataViewMode = 'brief';  // 'brief' = 简略, 'detail' = 详细
 
 // webchat SID 特例：截断乱码部分，只显示有意义的前缀
@@ -323,8 +314,8 @@ function renderDataFromCache(groupFilter, searchQuery) {
   const panel = $('data-panel');
   if (!panel || !_dataCache) return;
 
-  const gl = _dataCache.global || [];
-  const ng = _dataCache.non_global || [];
+  const gl = _dataCache.records || [];
+  const ng = [];
   const isBrief = _dataViewMode === 'brief';
   const q = searchQuery || '';
 
@@ -546,8 +537,7 @@ function bindDataActions() {
             toast('数据已删除', 'ok');
             // 从缓存中移除该记录，避免重新请求 API
             if (_dataCache) {
-              _dataCache.global = (_dataCache.global || []).filter(r => r.id !== id);
-              _dataCache.non_global = (_dataCache.non_global || []).filter(r => r.id !== id);
+              _dataCache.records = (_dataCache.records || []).filter(r => r.id !== id);
             }
             renderDataFromCache();
           } else { toast('删除失败', 'err'); }
@@ -594,256 +584,6 @@ function bindDataActions() {
     };
   }
 }
-
-// ===== Tab: 迁移同步 =====
-let _sessionList = [];
-let _syncPairs = [];
-let _syncHint = '';
-let _migrateSource = '';
-let _migrateTarget = '';
-
-function migrate() {
-  return `<div>
-    ${sec('会话迁移 / 复制')}
-    <p class="data-hint" style="margin-bottom:12px;">
-      将源会话用户的好感度、关系、用户ID 等复制到目标 UMO（仅会话ID不同）。用于群被封/换群/对接 WebChat。<br>
-      UMO 示例：<code>aiocqhttp:GroupMessage:123456</code> · <code>webchat:FriendMessage:&lt;session_id&gt;</code>
-    </p>
-    <div class="row">
-      <div class="field" style="flex:1">
-        <label>源会话 UMO</label>
-        <input type="text" id="mig-src" class="data-search" style="width:100%;font-family:monospace;font-size:0.82rem"
-          placeholder="源会话 UMO" value="${esc(_migrateSource)}">
-      </div>
-      <div class="field" style="flex:1">
-        <label>目标会话 UMO</label>
-        <input type="text" id="mig-tgt" class="data-search" style="width:100%;font-family:monospace;font-size:0.82rem"
-          placeholder="目标会话 UMO（可手写 webchat:...）" value="${esc(_migrateTarget)}">
-      </div>
-    </div>
-    <div class="row" style="align-items:center;gap:12px;margin-top:8px">
-      <label style="font-size:0.82rem;color:var(--c-text-dim)">模式
-        <select id="mig-mode">
-          <option value="merge">merge（合并覆盖）</option>
-          <option value="replace">replace（清空目标后复制）</option>
-        </select>
-      </label>
-      <button class="btn-sm" id="btn-mig-preview">预览源</button>
-      <button class="btn-sm btn-add" id="btn-mig-copy">一键复制</button>
-      <button class="btn-sm" id="btn-mig-migrate" style="background:var(--c-warning);color:#111">一键迁移</button>
-      <button class="btn-sm" id="btn-mig-refresh">\u21BB 刷新会话</button>
-    </div>
-    <div id="mig-session-list" class="tbl-wrap" style="max-height:220px;overflow:auto;margin-top:10px"></div>
-    <div id="mig-preview" class="dim" style="margin-top:10px;font-size:0.82rem;white-space:pre-wrap;max-height:160px;overflow:auto"></div>
-    <div id="mig-log" class="dim" style="margin-top:8px;font-size:0.82rem"></div>
-
-    ${sec('完全同步（双向）')}
-    <p class="data-hint" style="margin-bottom:12px;">
-      配置后会话 A 的好感/关系变动实时同步到 B，反之亦然。支持 WebChat 与各平台 UMO。
-      <span id="mig-sync-hint"></span>
-    </p>
-    <div class="row">
-      <div class="field" style="flex:1">
-        <label>会话 A UMO</label>
-        <input type="text" id="sync-a" class="data-search" style="width:100%;font-family:monospace;font-size:0.82rem" placeholder="UMO A">
-      </div>
-      <div class="field" style="flex:1">
-        <label>会话 B UMO</label>
-        <input type="text" id="sync-b" class="data-search" style="width:100%;font-family:monospace;font-size:0.82rem" placeholder="UMO B">
-      </div>
-    </div>
-    <div class="row" style="margin-top:8px">
-      <input type="text" id="sync-note" class="data-search" style="flex:1" placeholder="备注（可选）">
-      <button class="btn-sm btn-add" id="btn-sync-add">添加同步对</button>
-    </div>
-    <div id="mig-sync-pairs" style="margin-top:12px"></div>
-  </div>`;
-}
-
-function initMigrateTab() {
-  const src = $('mig-src');
-  const tgt = $('mig-tgt');
-  if (src) src.oninput = () => { _migrateSource = src.value.trim(); };
-  if (tgt) tgt.oninput = () => { _migrateTarget = tgt.value.trim(); };
-
-  const setLog = (msg, err) => {
-    const el = $('mig-log');
-    if (!el) return;
-    el.textContent = msg;
-    el.style.color = err ? 'var(--c-error)' : 'var(--c-text-dim)';
-  };
-
-  const btnRefresh = $('btn-mig-refresh');
-  if (btnRefresh) btnRefresh.onclick = () => loadMigrateSessions();
-
-  const btnPreview = $('btn-mig-preview');
-  if (btnPreview) btnPreview.onclick = async () => {
-    try {
-      const source = ($('mig-src')?.value || '').trim();
-      if (!source) return toast('请填写源 UMO', 'err');
-      const res = await bridge.apiPost('sessions', { action: 'preview', source });
-      const box = $('mig-preview');
-      const users = res.users || [];
-      if (box) {
-        box.textContent = users.length
-          ? users.map(u => `${u.username || u.user_id} (${u.user_id}) · 好感 ${u.favour} · 关系 ${u.relationship || '无'}`).join('\n')
-          : '源会话无记录';
-      }
-      setLog(`预览 ${source}：${res.count || 0} 条`);
-    } catch (e) { toast(e.message, 'err'); setLog(e.message, true); }
-  };
-
-  const doOp = async (action) => {
-    try {
-      const source = ($('mig-src')?.value || '').trim();
-      const target = ($('mig-tgt')?.value || '').trim();
-      const mode = $('mig-mode')?.value || 'merge';
-      if (!source || !target) return toast('请填写源和目标 UMO', 'err');
-      if (action === 'migrate' && !confirm('迁移会清空源会话数据，确认继续？')) return;
-      const res = await bridge.apiPost('sessions', { action, source, target, mode });
-      setLog(res.message || JSON.stringify(res), !res.success);
-      toast(res.success ? (res.message || '完成') : (res.message || '失败'), res.success ? 'ok' : 'err');
-      if (res.success) loadMigrateSessions();
-    } catch (e) { toast(e.message, 'err'); setLog(e.message, true); }
-  };
-  const btnCopy = $('btn-mig-copy');
-  if (btnCopy) btnCopy.onclick = () => doOp('copy');
-  const btnMig = $('btn-mig-migrate');
-  if (btnMig) btnMig.onclick = () => doOp('migrate');
-
-  const btnAdd = $('btn-sync-add');
-  if (btnAdd) btnAdd.onclick = async () => {
-    try {
-      const a = ($('sync-a')?.value || '').trim();
-      const b = ($('sync-b')?.value || '').trim();
-      const note = ($('sync-note')?.value || '').trim();
-      const res = await bridge.apiPost('session_sync', { action: 'add', a, b, note, enabled: true });
-      _syncPairs = res.pairs || [];
-      toast('同步对已添加', 'ok');
-      renderSyncPairs();
-    } catch (e) { toast(e.message, 'err'); setLog(e.message, true); }
-  };
-
-  loadMigrateSessions();
-  loadSyncPairs();
-}
-
-async function loadMigrateSessions() {
-  const box = $('mig-session-list');
-  if (!box) return;
-  try {
-    box.innerHTML = '<div class="dim">加载会话列表...</div>';
-    const res = await bridge.apiGet('sessions');
-    _sessionList = res.sessions || [];
-    if (!_sessionList.length) {
-      box.innerHTML = '<p class="dim">暂无会话数据</p>';
-      return;
-    }
-    let html = '<table class="dt"><thead><tr><th>会话 UMO</th><th>记录数</th><th>操作</th></tr></thead><tbody>';
-    _sessionList.forEach(s => {
-      html += `<tr>
-        <td style="font-family:monospace;font-size:0.78rem;word-break:break-all">${esc(s.session_id)}</td>
-        <td>${s.count}</td>
-        <td style="white-space:nowrap">
-          <button class="btn-sm" data-act="pick-src" data-sid="${esc(s.session_id)}">作源</button>
-          <button class="btn-sm" data-act="pick-tgt" data-sid="${esc(s.session_id)}">作目标</button>
-        </td>
-      </tr>`;
-    });
-    html += '</tbody></table>';
-    box.innerHTML = html;
-    $$('#mig-session-list [data-act="pick-src"]').forEach(btn => {
-      btn.onclick = () => {
-        _migrateSource = btn.dataset.sid;
-        const el = $('mig-src');
-        if (el) el.value = _migrateSource;
-      };
-    });
-    $$('#mig-session-list [data-act="pick-tgt"]').forEach(btn => {
-      btn.onclick = () => {
-        _migrateTarget = btn.dataset.sid;
-        const el = $('mig-tgt');
-        if (el) el.value = _migrateTarget;
-      };
-    });
-  } catch (e) {
-    box.innerHTML = '<p class="dim" style="color:var(--c-error)">加载失败: ' + esc(e.message) + '</p>';
-  }
-}
-
-async function loadSyncPairs() {
-  try {
-    const res = await bridge.apiGet('session_sync');
-    _syncPairs = res.pairs || [];
-    _syncHint = res.hint || '';
-    const hintEl = $('mig-sync-hint');
-    if (hintEl && _syncHint) hintEl.textContent = ' ' + _syncHint.replace(/\n/g, ' ');
-    renderSyncPairs();
-  } catch (e) {
-    const box = $('mig-sync-pairs');
-    if (box) box.innerHTML = '<p class="dim" style="color:var(--c-error)">' + esc(e.message) + '</p>';
-  }
-}
-
-function renderSyncPairs() {
-  const box = $('mig-sync-pairs');
-  if (!box) return;
-  if (!_syncPairs.length) {
-    box.innerHTML = '<p class="dim">暂无同步对</p>';
-    return;
-  }
-  let html = '';
-  _syncPairs.forEach((p, i) => {
-    html += `<div style="border:1px solid var(--c-border);border-radius:8px;padding:10px;margin-bottom:8px;font-size:0.82rem">
-      <div style="font-family:monospace;word-break:break-all">A: ${esc(p.a)}</div>
-      <div style="font-family:monospace;word-break:break-all;margin:4px 0">B: ${esc(p.b)}</div>
-      <div class="dim">${p.enabled === false ? '已禁用' : '启用中'}${p.note ? ' · ' + esc(p.note) : ''}</div>
-      <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">
-        <button class="btn-sm" data-act="sync-toggle" data-i="${i}">${p.enabled === false ? '启用' : '禁用'}</button>
-        <button class="btn-sm btn-add" data-act="sync-a2b" data-i="${i}">立即 A\u2192B</button>
-        <button class="btn-sm btn-add" data-act="sync-b2a" data-i="${i}">立即 B\u2192A</button>
-        <button class="btn-sm btn-add" data-act="sync-both" data-i="${i}">双向 merge</button>
-        <button class="btn-sm" data-act="sync-del" data-i="${i}" style="color:var(--c-error)">删除</button>
-      </div>
-    </div>`;
-  });
-  box.innerHTML = html;
-
-  const setLog = (msg, err) => {
-    const el = $('mig-log');
-    if (!el) return;
-    el.textContent = msg;
-    el.style.color = err ? 'var(--c-error)' : 'var(--c-text-dim)';
-  };
-
-  $$('#mig-sync-pairs [data-act]').forEach(btn => {
-    btn.onclick = async () => {
-      const act = btn.dataset.act;
-      const i = +btn.dataset.i;
-      try {
-        if (act === 'sync-toggle') {
-          const res = await bridge.apiPost('session_sync', { action: 'toggle', index: i });
-          _syncPairs = res.pairs || [];
-          renderSyncPairs();
-        } else if (act === 'sync-del') {
-          if (!confirm('删除该同步对？')) return;
-          const res = await bridge.apiPost('session_sync', { action: 'remove', index: i });
-          _syncPairs = res.pairs || [];
-          renderSyncPairs();
-        } else if (act === 'sync-a2b' || act === 'sync-b2a' || act === 'sync-both') {
-          const p = _syncPairs[i];
-          if (!p) return;
-          const direction = act === 'sync-a2b' ? 'a_to_b' : act === 'sync-b2a' ? 'b_to_a' : 'both';
-          const res = await bridge.apiPost('session_sync', { action: 'sync_now', a: p.a, b: p.b, direction });
-          setLog(JSON.stringify(res.results || res, null, 2), !res.success);
-          toast(res.success ? '同步完成' : '同步部分失败', res.success ? 'ok' : 'err');
-          loadMigrateSessions();
-        }
-      } catch (e) { toast(e.message, 'err'); setLog(e.message, true); }
-    };
-  });
-}
-
 // ===== Tab: 备份管理 =====
 function backup() {
   return `<div>

@@ -19,10 +19,8 @@ from astrbot.api import logger
 DEFAULT_CONFIG: Dict[str, Any] = {
     # 基础配置
     "favour_mode": "galgame",
-    "is_global_favour": False,
     "group_sort_by": "default",
     "enable_cold_violence": True,
-    "enable_relationship_table": True,
     "min_favour_value": -200,
     "max_favour_value": 1000,
     "default_favour": 0,
@@ -72,8 +70,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "favour_decrease_min": 1,
         "favour_decrease_max": 5,
         "level_threshold": 50,
-        "blocked_sessions": [],
-        "allowed_sessions": [],
         # 修改好感度指令的最低权限：superuser=仅Bot管理员, owner=群主及以上, admin=管理员及以上
         "modify_favour_permission": "admin",
     },
@@ -89,12 +85,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "on_message": "[自动回复]不想理你,{time_str}后再找我",
             "on_query": "冷暴力呢，看什么看，{time_str}之后再找我说话"
         }
-    },
-
-    # 会话完全同步：成对 UMO 双向同步好感度/关系/用户字段
-    # 每项: {"a": "platform:type:id", "b": "webchat:FriendMessage:xxx", "enabled": true, "note": ""}
-    "session_sync": {
-        "pairs": [],
     },
 }
 
@@ -234,8 +224,8 @@ class PluginConfigManager:
 
         # 基础字段直接迁移（不含 min/max_favour_value，单独处理）
         simple_keys = [
-            "favour_mode", "is_global_favour", "group_sort_by",
-            "enable_cold_violence", "enable_relationship_table",
+            "favour_mode", "group_sort_by",
+            "enable_cold_violence",
             "default_favour"]
         for key in simple_keys:
             if key in old:
