@@ -1437,7 +1437,18 @@ class FavourManagerTool(Star):
                         self.consecutive_decreases[cv_key] = 0 # 触发后重置
                 else:
                     self.consecutive_decreases[cv_key] = 0 # 上升或持平则重置
-                    
+
+            # 好感度变动反馈：蛋糕插件激活时显示在对话最后一行
+            if self._get_cake_plugin() is not None:
+                icon = "🖤" if new_fav < 0 else "❤️"
+                if data['change'] > 0:
+                    change_str = f"+{data['change']}"
+                elif data['change'] < 0:
+                    change_str = str(data['change'])
+                else:
+                    change_str = "持平"
+                res.chain.append(Plain(f"\n{icon}：好感度{change_str}  总好感：{new_fav}"))
+
         except Exception as e:
             logger.error(f"更新好感度数据失败: {str(e)}\n{traceback.format_exc()}")
 
