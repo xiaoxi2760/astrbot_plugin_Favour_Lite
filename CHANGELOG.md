@@ -1,8 +1,29 @@
-# 当前版本概要
+# 更新日志
+
+## v1.0.0 - Favour Lite (2026-10-11)
+
+本仓库自本版本起更名为 **astrbot_plugin_Favour_Lite**，作为独立衍生版维护（基于上游 v4.3.0，Apache-2.0，原项目：https://github.com/nuomicici/astrbot_plugin_Favour_Ultra ）。
+
+### 变更
+- 好感度固定纯全局模式：同一用户跨群/跨平台共享一份数据，删除整套会话隔离/迁移同步体系
+- 移除主动搭话子系统（调度器、合成事件推送）及对应配置
+- 删除 _conf_schema.json，配置全部走 WebUI
+- 新增 LLM 对话末尾好感度变动显示行，抽成 favour_change_line() 供其他插件（astrbot_plugin_cake_denia）复用
+- 更名、重写 README 并添加上游署名；数据目录名保持 astrbot_plugin_favour_ultra，从原版切换数据无缝沿用
+
+### 修复
+- init_db 建表语句移入 with 块内，修复数据库连接已关闭（b66ee29）
+
+---
+
+## 上游历史（v4.3.0 及更早）
+
+> 以下内容摘自原插件仓库的 CHANGELOG，供对照。
+
 - 新增数据库自动备份系统，支持定时备份与恢复；WebUI 主题全面重构，支持暗色模式
 - 请注意，主动搭话功能暂时不完善，请等待修复
-  
-# 更新须知
+
+### 更新须知
 更新后如果无法正常加载，请依次尝试：
 1. 重启框架
 2. 重新安装该插件
@@ -16,8 +37,8 @@
 4. 如遇问题，可以复制下方链接，于 手动下载 -> 链接下载 处手动回退
 https://github.com/nuomicici/astrbot_plugin_Favour_Ultra/tree/older/
 
-## 更新日志
-### v4.3.0 (2026-07-24)
+### 版本记录
+#### v4.3.0 (2026-07-24)
 - 在现有配置中心 WebUI 新增「迁移同步」分页（不重写原 Pages）
 - 支持按 UMO 一键复制/迁移会话数据（user_id、好感度、关系、唯一性、昵称等；仅 session_id 替换）
 - 支持会话完全同步：配置 A/B 两 UMO 后双向实时同步变更（含 WebChat `/api/v1/chat` 会话）

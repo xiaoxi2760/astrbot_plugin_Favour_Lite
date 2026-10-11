@@ -1,65 +1,60 @@
 <div align="center">
-<img style="width:70%" src="https://count.getloli.com/@astrbot_plugin_Favour_Ultra?name=astrbot_plugin_Favour_Ultra&theme=booru-lewd&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto" alt="Banner">
 
-# 好感度/关系管理系统 (Favour Ultra)
+# 精简好感度系统 (Favour Lite)
 
-[![当前版本](https://img.shields.io/badge/当前版本v4.2.0-blue?style=for-the-badge)](#更新日志) 
-[![未来计划](https://img.shields.io/badge/未来计划-purple?style=for-the-badge)](#未来计划)
-[![来许愿！](https://img.shields.io/badge/来许愿！-ff69b4?style=for-the-badge)](#联系)
-
-<div align="left" style="width:70%">
-
-最新动态 (2026-07-09)
-
-
-* **核心机制重大升级**：新增数据库自动备份系统，支持定时备份与一键恢复；WebUI 主题全面重构，支持暗色模式；SQLite 并发写入大幅增强。
-* **配置更新**：更新后旧有好感度规则失效，请务必前往webui进行配置检查和更新！
-* **必看！**：如果后台显示“无法识别好感度标签”，请先尝试在预设对话中添加如下内容并清空历史对话记录！（若无效请前往反馈）
-```
-- 你好！
-- 你好呀~[好感度 持平]
-- 早上好！
-- 早上好[好感度 持平]
-```
-  
-</div>
+[![上游项目](https://img.shields.io/badge/基于_Favour_Ultra_v4.3.0-ff69b4?style=for-the-badge)](https://github.com/nuomicici/astrbot_plugin_Favour_Ultra)
+[![许可证](https://img.shields.io/badge/License-Apache--2.0-blue?style=for-the-badge)](LICENSE)
+[![当前版本](https://img.shields.io/badge/当前版本v1.0.0-blue?style=for-the-badge)](#更新日志)
 
 </div>
+
+> [!IMPORTANT]
+> **本项目是衍生版，不是原插件。** 基于 [糯米茨/astrbot_plugin_Favour_Ultra](https://github.com/nuomicici/astrbot_plugin_Favour_Ultra) v4.3.0（Apache-2.0）精简修改。
+> 原版功能更完整（主动搭话、会话隔离/迁移同步等），需要完整能力请安装 [原版](https://github.com/nuomicici/astrbot_plugin_Favour_Ultra)。
+
+---
+
+## 与原版的差异
+
+- **好感度固定纯全局**：同一用户在所有群聊/私聊共享同一份好感度（原版按适配器隔离会话数据）。
+- **移除主动搭话子系统**：定时调度器、合成事件推送等相关代码与配置全部删除。
+- **移除会话隔离体系**：会话迁移/同步等功能删除；`_conf_schema.json` 不再提供，全部配置走 WebUI。
+- **新增**：LLM 对话结束后在最后一行显示好感度变动（`❤️/🖤：好感度±X  总好感：Y`），并抽成 `favour_change_line()` 供其他插件（如 [astrbot_plugin_cake_denia](https://github.com/xiaoxi2760/astrbot_plugin_cake_denia)）复用。
+
+三轮精简的详细记录（含删改清单与本地提交号）见 [精简修改说明.md](精简修改说明.md)。
 
 ---
 
 ## 📖 插件概述
 
-本插件为 AstrBot 赋予了具备持久记忆的**好感度与人际关系系统**。它不仅仅是一个数值计数器，而是通过深度集成大语言模型（LLM），利用系统指令级覆盖，让 Bot 能够根据交互历史自然地演化与用户的关系（如陌生人、朋友、恋人、死敌等）。
+为 AstrBot 赋予具备持久记忆的**好感度与人际关系系统**。通过深度集成 LLM、系统指令级覆盖，让 Bot 根据交互历史自然演化与用户的关系（陌生人、朋友、恋人、死敌等）。
 
-**核心特性：**
+**保留的核心特性：**
 
-*   **沉浸式交互与数值隐射**：好感度变化由 LLM 根据对话内容自动判断，根据具体数值改变对用户的交互态度。默认不可见，静默执行变更。
-*   **多维动态关系**：支持单边/双边人际关系确立。大模型不仅能被动接受玩家的关系请求，还能在情感共鸣时**主动确认关系**，或在触碰底线时**主动解除关系**。
-*   **上下文精准注入**：基于 `<FavourDynamicContext>` XML 结构，实时将好感度等级、好感上限、现有关系及排他约束注入 System Prompt，确保模型对话的人设稳定性。
-*   **可视化报表与冷暴力惩罚**：支持生成图片报表直观展示排行；多次好感度降低触发真实情绪模拟，直接拒回或敷衍用户。
-*   **SQLite 存储**：支持海量用户数据的高效读写、查询与多维度管理（全局/单群隔离模式）。
-*   **WebUI 配置面板**：全功能可视化配置与数据管理面板，支持暗色模式，所有参数零代码修改。
-*   **自动备份系统**：定时自动备份数据库，支持 WebUI 一键创建/恢复/删除/下载备份，保障数据安全。
+*   **沉浸式交互与数值隐射**：好感度变化由 LLM 根据对话内容自动判断，默认不可见、静默执行变更。
+*   **多维动态关系**：支持单边/双边人际关系确立与解除。
+*   **上下文精准注入**：基于 `<FavourDynamicContext>` XML 结构，实时注入好感等级、关系与排他约束，保证人设稳定。
+*   **可视化报表与冷暴力惩罚**：图片报表直观展示排行；多次好感度降低触发真实情绪模拟。
+*   **SQLite 存储 + 自动备份**：定时备份数据库，WebUI 一键创建/恢复/删除/下载备份。
+*   **WebUI 配置面板**：全功能可视化配置与数据管理，支持暗色模式。
 
 ---
 
-## 📦 安装与配置
-
-### 安装方法
-
-1.  **插件市场安装**：在 AstrBot 管理面板搜索 `Favour_Ultra` 或 `糯米茨` 进行安装。
-2.  **手动安装**：
+## 📦 安装
 
 ```bash
 cd data/plugins
-git clone https://github.com/nuomicici/astrbot_plugin_Favour_Ultra
+git clone https://github.com/xiaoxi2760/astrbot_plugin_Favour_Lite
 # 重启 AstrBot 或重载插件
 ```
 
-### 配置文件说明
+> 💡 从原版 Favour_Ultra 切换过来的用户**数据无需迁移**：数据库与配置目录名保持 `astrbot_plugin_favour_ultra` 不变（见下方「数据存储」），装上即沿用原有好感度数据。
 
-插件配置已升级为嵌套结构，请在 AstrBot 管理面板中进行设置。
+---
+
+## ⚙️ 配置
+
+请在 AstrBot 管理面板的 WebUI 中设置。
 
 #### 1. 基础设置
 | 配置项 | 默认值 | 说明 |
@@ -69,15 +64,15 @@ git clone https://github.com/nuomicici/astrbot_plugin_Favour_Ultra
 | `min/max_favour_value` | `-100`/`100` | **数值范围**：好感度的上下限。 |
 | `default_favour` | `0` | **初始值**：普通新用户的默认好感度。 |
 
-> 好感度始终为**全局模式**：同一平台（适配器）下所有群聊/私聊共享同一套好感度数据。
+> 好感度为**纯全局模式**：同一用户在所有群聊/私聊共享同一套好感度数据。
 
 #### 2. 高级配置 (`advanced_config`)
 | 配置项 | 默认值 | 说明 |
 | :--- | :--- | :--- |
 | `admin_default_favour` | `50` | **特权初始值**：Bot管理员/特使的初始好感度。 |
 | `favour_envoys` | `[]` | **特使列表**：填入用户ID，享受高初始好感度。 |
-| `favour_increase_min/max` | `1`/`3` | **上升幅度**：单次互动好感度增加的随机范围（现主要由LLM根据情绪波动自主返回 1~3 具体数值）。 |
-| `favour_decrease_min/max` | `1`/`5` | **下降幅度**：单次互动好感度扣除的随机范围（现主要由LLM根据冒犯程度自主返回 1~5 具体数值）。 |
+| `favour_increase_min/max` | `1`/`3` | **上升幅度**：单次互动好感度增加的随机范围。 |
+| `favour_decrease_min/max` | `1`/`5` | **下降幅度**：单次互动好感度扣除的随机范围。 |
 
 #### 3. 冷暴力配置 (`cold_violence_config`)
 | 配置项 | 默认值 | 说明 |
@@ -89,14 +84,14 @@ git clone https://github.com/nuomicici/astrbot_plugin_Favour_Ultra
 ---
 
 ## 💻 命令使用手册
-- 具体使用方法请使用/好感度帮助查看，插件更新文档来不及改
+- 具体使用方法请使用/好感度帮助查看。
 
 ### 1. 通用命令 (所有用户)
 
 | 命令 | 示例 | 描述 |
 | :--- | :--- | :--- |
 | `查询好感度` | `查询好感度 @某人` | **[文本]** 查询自己或指定用户的详细数据。 |
-| `查询当前好感度` | `查询当前好感度` | **[图片]** 生成当前平台的好感度排行表格。 |
+| `查询当前好感度` | `查询当前好感度` | **[图片]** 生成好感度排行表格。 |
 | `好感度指令帮助` | `好感度指令帮助` | 查看详细的指令用法说明。 |
 
 ### 2. 管理员命令
@@ -117,60 +112,33 @@ git clone https://github.com/nuomicici/astrbot_plugin_Favour_Ultra
 
 | 命令 | 描述 |
 | :--- | :--- |
-| `查询全局好感度` | **[图片]** 查询全局模式下的好感度记录。 |
+| `查询全局好感度` | **[图片]** 查询全局好感度记录。 |
+| `全局修改好感度` | 全局强制调整某人的好感度。 |
+| `全局修改关系` / `全局解除关系` | 全局强制修改/解除关系。 |
 | `清空全局好感度` | **[极危险]** 清空数据库中所有好感度数据（需二次确认）。 |
 | `取消冷暴力` | 强制解除某人的冷暴力锁定状态。 |
+| `查看冷暴力列表` | 查看当前处于冷暴力状态的用户。 |
 
 ---
 
-## ⚙️ 核心机制解析
+## 💾 数据存储
 
-### 1. 动态上下文注入 (Dynamic Context)
-插件会实时解析当前交互对象，并将状态通过 XML 节点 `<FavourDynamicContext>` 注入系统提示词。这包含了当前交互对象的 ID、管理权限、好感度数值与等级、已建立的单边/排他性关系等信息，甚至包含了对当前好感度上限的动态约束声明。系统借此引导大模型在生成回复时做出最符合当前关系阶段与身份设定的选择。
-
-### 2. 多态输出控制与隐形标签系统
-回复末尾由 LLM 根据内置的**逻辑门**（GALGAME/REALISTIC 模式）输出专属的情感或关系变动标签，插件捕捉后会自动截断并在后台记录，实现数据流转而玩家无感知：
-*   **基础好感波动**：`[好感度 上升：X]` / `[好感度 降低：Y]` / `[好感度 持平]`
-*   **玩家关系申请**：`[用户申请确认关系:目标用户ID:关系名称:同意(true/false):排他性(true/false)]`
-*   **主动关系确立**：`[主动确认关系:目标用户ID:关系名称:排他性(true/false)]`
-*   **主动关系解除**：`[主动解除关系:目标用户ID:关系名称]`
-
-### 3. 智能 T2I 报表
-当查询多人数据（如 `查询当前好感度`）时，插件会自动调用 AstrBot 的文本转图片引擎。
-
-### 4. 冷暴力机制
-当好感度连续触发 `降低` 且超过设定阈值时：
-1.  **锁定**：记录用户 ID 及解锁时间（默认60分钟）。
-2.  **拦截**：该用户发送的消息被自动阻断，不再透传给 LLM 消耗 Token。
-3.  **回绝**：直接向其返回冰冷的预设文本（如：“我现在不想理你”）。
-
----
-
-## 💾 数据存储与迁移
-
-插件采用 **SQLite** 数据库存储数据，以提供更高的性能和查询能力。
+插件采用 **SQLite** 数据库存储数据。
 
 *   **数据库文件**：`data/plugin_data/astrbot_plugin_favour_ultra/favour.db`
-*   **自动迁移**：插件启动时会自动检测旧版的 `haogan.json` 等配置。旧数据会自动导入数据库，原文件将被重命名为 `.json.bak` 进行安全备份。
+*   **自动备份**：默认每 3 小时备份一次，保存在同目录 `backups/` 下，可在 WebUI「备份」Tab 管理。
 
-### 🗄️ 备份系统
-
-插件内置自动备份机制，保障数据安全：
-
-*   **自动备份**：默认每 3 小时自动备份一次，备份文件保存于 `data/plugin_data/astrbot_plugin_favour_ultra/backups/` 目录
-*   **WebUI 管理**：在「备份」Tab 中可查看所有备份、手动创建备份、恢复历史备份或删除旧备份
-*   **配置项**：可在 WebUI 中调整备份间隔 (`interval_hours`) 与备份保留时长 (`retention_hours`)
+> 目录名刻意保持 `astrbot_plugin_favour_ultra`，从原版切换过来时数据无缝沿用；请勿手动改名，否则会被视为全新数据库。
 
 ---
 
-## 联系
+## 🙏 致谢
 
-如果您在使用中遇到问题，或有新的功能建议，欢迎反馈：
+- **原项目**：[nuomicici/astrbot_plugin_Favour_Ultra](https://github.com/nuomicici/astrbot_plugin_Favour_Ultra) by [糯米茨](https://github.com/nuomicici)（Apache-2.0）。本项目全部核心能力均来自原项目，向原作者致敬。
+- 本仓库由 [xiaoxi2760](https://github.com/xiaoxi2760) 维护，问题反馈请到[本仓库 Issues](https://github.com/xiaoxi2760/astrbot_plugin_Favour_Lite/issues)（与原插件相关的问题也欢迎到[原仓库 Issues](https://github.com/nuomicici/astrbot_plugin_Favour_Ultra/issues)反馈）。
 
-| 作者信息 | 交流/反馈 |
-| :--- | :--- |
-| **作者**: 糯米茨<br>**联系方式**: （许愿通道）<br>- [GitHub Issues](https://github.com/nuomicici/astrbot_plugin_Favour_Ultra/issues)<br>- [QQ](https://qm.qq.com/q/wMGXYfKKoS) | <img src="QC.jpg" width="240px" alt="扫码加群"> |
+---
 
-<div align="center">
-如果不介意的话，可以给项目点一个 Star ⭐ 支持一下！
-</div>
+## 更新日志
+
+见 [CHANGELOG.md](CHANGELOG.md)（v1.0.0 起为本衍生版记录，v4.3.0 及更早为上游原插件历史）。

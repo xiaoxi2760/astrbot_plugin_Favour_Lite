@@ -20,7 +20,7 @@ from .permissions import PermLevel, PermissionManager
 from .storage import FavourDBManager, FavourRecord
 from .config_manager import PluginConfigManager
 
-PLUGIN_NAME = "astrbot_plugin_Favour_Ultra"
+PLUGIN_NAME = "astrbot_plugin_Favour_Lite"
 
 # 好感度称号（按好感度阈值解锁，动态判定；负阈值=好感度 ≤ 该值解锁，正阈值=好感度 ≥ 该值解锁）
 FAVOUR_TITLES = [
