@@ -665,11 +665,8 @@ class FavourManagerTool(Star):
         return None
 
     def _get_session_id(self, event: AstrMessageEvent) -> Optional[str]:
-        # 全局模式：按适配器共享，session_id = 适配器前缀（如 "aiocqhttp"）
-        origin = event.unified_msg_origin
-        if origin and ":" in origin:
-            return origin.split(":")[0]
-        return origin or "global"
+        # 全局模式：同一用户跨所有会话共享一份好感度（存储仍按 user_id 分记录）
+        return "global"
 
     def _escape_markdown(self, text: str) -> str:
         """转义 Markdown 特殊字符以防止表格错位或渲染错误"""
@@ -722,6 +719,20 @@ class FavourManagerTool(Star):
             return {str(k): v for k, v in (titles or {}).items()}
         except Exception:
             return {}
+
+    def favour_change_line(self, favour: int, change: int) -> str:
+        """构造好感度变动显示行：❤️/🖤：好感度+/-X  总好感：Y（总好感为负时用 🖤）。
+
+        供本插件 update_data 使用，蛋糕插件（astrbot_plugin_cake_denia）也可复用。
+        """
+        icon = "🖤" if favour < 0 else "❤️"
+        if change > 0:
+            change_str = f"+{change}"
+        elif change < 0:
+            change_str = str(change)
+        else:
+            change_str = "持平"
+        return f"{icon}：好感度{change_str}  总好感：{favour}"
 
     @staticmethod
     def _unlocked_favour_titles(favour: int) -> list:
@@ -1440,14 +1451,7 @@ class FavourManagerTool(Star):
 
             # 好感度变动反馈：蛋糕插件激活时显示在对话最后一行
             if self._get_cake_plugin() is not None:
-                icon = "🖤" if new_fav < 0 else "❤️"
-                if data['change'] > 0:
-                    change_str = f"+{data['change']}"
-                elif data['change'] < 0:
-                    change_str = str(data['change'])
-                else:
-                    change_str = "持平"
-                res.chain.append(Plain(f"\n{icon}：好感度{change_str}  总好感：{new_fav}"))
+                res.chain.append(Plain(f"\n{self.favour_change_line(new_fav, data['change'])}"))
 
         except Exception as e:
             logger.error(f"更新好感度数据失败: {str(e)}\n{traceback.format_exc()}")
