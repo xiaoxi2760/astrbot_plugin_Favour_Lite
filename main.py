@@ -931,7 +931,12 @@ class FavourManagerTool(Star):
 
             favs = [r.favour for r in all_records] or [0]
             # 批量拉头像（QQ 号才拉得动），拉不到自动回退昵称首字
-            avatars = await favour_avatar.fetch_many([u["uid"] for u in users], 100)
+            avatars = await favour_avatar.fetch_many(
+                [u["uid"] for u in users], favour_avatar.SIZE_RANK)
+            got = sum(1 for v in avatars.values() if v is not None)
+            if users:
+                logger.info(f"[FavourAvatar] 排行榜头像 {got}/{len(avatars)} "
+                            f"（其余为无头像或拉取失败，回退昵称首字）")
             for u in users:
                 u["avatar"] = avatars.get(u["uid"])
             payload = {
@@ -1006,9 +1011,13 @@ class FavourManagerTool(Star):
             }
             # 头像拉取单独兜底：拉不到就画昵称首字，不能因此丢掉整张面板
             try:
-                payload["avatar"] = await favour_avatar.fetch_avatar(uid, 640)
+                payload["avatar"] = await favour_avatar.fetch_avatar(
+                    uid, favour_avatar.SIZE_PROFILE)
+                if payload["avatar"] is None:
+                    why = favour_avatar.last_error(uid) or "非 QQ 号或未设置头像"
+                    logger.info(f"[FavourAvatar] uid={uid} 无头像，回退昵称首字：{why}")
             except Exception as e:
-                logger.debug(f"拉取头像失败 uid={uid}: {e}")
+                logger.warning(f"[FavourAvatar] uid={uid} 拉取异常：{e}")
                 payload["avatar"] = None
             out_path = (self.data_dir / "cards" /
                         f"profile_{int(datetime.now().timestamp())}.png")
