@@ -1,0 +1,18 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# 运行期数据
+# 正常部署时落在插件目录之外的 plugin_data/astrbot_plugin_favour_ultra/ 下，
+# 这里兜底防止在插件目录内生成后被误提交（数据库 / 备份含用户数据，绝不入库）
+*.db
+*.db-journal
+config.json
+config.json.tmp
+backups/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+*.log
