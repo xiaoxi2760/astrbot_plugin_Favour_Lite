@@ -53,7 +53,6 @@ class FavourManagerTool(Star):
         
         # 基础配置
         self.favour_mode = self.config.get("favour_mode", "galgame")
-        self.group_sort_by = self.config.get("group_sort_by", "default")
         self.enable_cold_violence = self.config.get("enable_cold_violence", True)
         self.min_favour_value = self.config.get("min_favour_value", -100)
         self.max_favour_value = self.config.get("max_favour_value", 100)
@@ -246,7 +245,7 @@ class FavourManagerTool(Star):
             return
         try:
             # 基础字段
-            for key in ["favour_mode", "group_sort_by",
+            for key in ["favour_mode",
                         "enable_cold_violence",
                         "min_favour_value", "max_favour_value", "default_favour"]:
                 if key in framework_config:
@@ -582,7 +581,6 @@ class FavourManagerTool(Star):
         cfg = self.config_mgr.config
         self.config = cfg
         self.favour_mode = cfg.get("favour_mode", "galgame")
-        self.group_sort_by = cfg.get("group_sort_by", "default")
         self.enable_cold_violence = cfg.get("enable_cold_violence", True)
         self.min_favour_value = cfg.get("min_favour_value", -100)
         self.max_favour_value = cfg.get("max_favour_value", 100)
@@ -866,25 +864,7 @@ class FavourManagerTool(Star):
             return f"{total_seconds // 86400}天前"
 
 
-    async def _sort_records(self, event: AstrMessageEvent, records: List[FavourRecord]) -> List[FavourRecord]:
-        """根据配置对记录进行排序"""
-        if not records:
-            return []
-            
-        if self.group_sort_by == "favour":
-            return sorted(records, key=lambda x: x.favour, reverse=True)
-        elif self.group_sort_by == "userid":
-            return sorted(records, key=lambda x: x.user_id)
-        elif self.group_sort_by == "nickname":
-            enriched = []
-            for r in records:
-                name = await self._get_user_display_name(event, r.user_id)
-                enriched.append((name, r))
-            enriched.sort(key=lambda x: x[0].lower())
-            return [x[1] for x in enriched]
-        else:
-            # default: 按添加时间 (created_at) 排序，如果没有则按 id
-            return sorted(records, key=lambda x: x.created_at if x.created_at else datetime.min)
+    # 注：原 _sort_records（group_sort_by 可配置排序）已随「排行固定按好感度倒序」移除。
 
     async def _send_chunked_t2i(self, event: AstrMessageEvent, title: str, headers: List[str], rows: List[str], chunk_size: int = 200):
         """分块发送 T2I 图片"""
@@ -971,6 +951,58 @@ class FavourManagerTool(Star):
                 favour_card.render_favour_card, payload, out_path, self._card_fonts())
         except Exception as e:
             logger.error(f"渲染好感度卡片失败，回退表格: {e}")
+            return None
+
+    def _favour_level_name(self, favour: int) -> str:
+        """按 favour_levels 配置取当前好感度落在的等级名。"""
+        for lv in self.favour_levels or []:
+            lo = lv.get("min", -10 ** 9)
+            hi = lv.get("max", 10 ** 9)
+            if lo <= favour <= hi:
+                return str(lv.get("name") or "未命名等级")
+        return "未分级"
+
+    @staticmethod
+    def _fmt_dt(dt) -> str:
+        if not dt:
+            return "--"
+        try:
+            return dt.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return str(dt)[:16]
+
+    async def _render_profile_card(self, record, fav: int, name: str,
+                                   uid: str, title_display: str) -> Optional[str]:
+        """渲染个人好感度面板。失败返回 None，由调用方回退纯文本。"""
+        if favour_card.Image is None:
+            return None
+        try:
+            all_records = await self.db_manager.get_all_in_session("global")
+            # 名次按好感度倒序算，同分同名次后取
+            higher = sum(1 for r in all_records if r.favour > fav)
+            rank = str(higher + 1) if all_records else "-"
+            payload = {
+                "name": name or uid,
+                "uid": uid,
+                "rank": rank,
+                "total_users": len(all_records),
+                "score": fav,
+                "title": title_display or "-",
+                "level": self._favour_level_name(fav),
+                "relationship": (record.relationship if record else "") or "无",
+                "is_unique": bool(record.is_unique) if record else False,
+                "last_interaction": self._fmt_dt(record.last_interaction) if record else "",
+                "created_at": self._fmt_dt(record.created_at) if record else "",
+                "min_favour": self.min_favour_value,
+                "max_favour": self.max_favour_value,
+                "footer": "好感度插件 · Favour Lite Archive",
+            }
+            out_path = (self.data_dir / "cards" /
+                        f"profile_{int(datetime.now().timestamp())}.png")
+            return await asyncio.to_thread(
+                favour_card.render_profile_card, payload, out_path, self._card_fonts())
+        except Exception as e:
+            logger.error(f"渲染个人好感度面板失败，回退文本: {e}")
             return None
 
     def _build_favour_levels_prompt(self, current_favour: Optional[int] = None) -> str:
@@ -1568,10 +1600,16 @@ class FavourManagerTool(Star):
         name = await self._get_user_display_name(event, target_uid)
         title_display = (await self._get_title_display([target_uid])).get(str(target_uid), "-")
 
+        # 优先出个人面板卡片；失败再回退纯文本
+        img_path = await self._render_profile_card(record, fav, name, target_uid, title_display)
+        if img_path:
+            yield event.image_result(img_path)
+            return
+
         msg = f"🔍 用户：{name}\n🆔 ID：{target_uid}\n❤ 好感度：{fav}\n🍰 称号：{title_display}\n🔗 关系：{rel}{uniq}"
         yield event.plain_result(msg)
 
-    @filter.command("查询当前好感度", alias={'查当前好感度', '查询本群好感度', '查本群好感度', '查群好感度', '查询群好感度', '当前好感度', '本群好感度', '群好感度'})
+    @filter.command("好感度排行", alias={'查询当前好感度', '查当前好感度', '查询本群好感度', '查本群好感度', '查群好感度', '查询群好感度', '当前好感度', '本群好感度', '群好感度'})
     async def query_current_session_favour(self, event: AstrMessageEvent, page: int = 1):
         """查询当前会话的所有好感度记录 (支持分页)"""
         # 权限检查：批量查询仅管理员可用
@@ -1587,8 +1625,10 @@ class FavourManagerTool(Star):
         if not records:
             yield event.plain_result("当前会话暂无好感度记录。")
             return
-            
-        records = await self._sort_records(event, records)
+
+        # 「排行」按定义就是按好感度倒序，不再受 group_sort_by 影响；
+        # 同分时按 user_id 排，保证翻页顺序稳定不跳动。
+        records = sorted(records, key=lambda r: (-r.favour, str(r.user_id)))
         
         page_size = 20
         total_records = len(records)
@@ -1605,8 +1645,8 @@ class FavourManagerTool(Star):
         # 优先出卡片图；失败再回退 markdown 表格
         img_path = await self._render_favour_card(
             event, page_records, records, title_map,
-            title="当前会话好感度列表", scope="当前会话",
-            page=page, total_pages=total_pages, page_cmd="查询当前好感度")
+            title="当前会话好感度排行", scope="当前会话",
+            page=page, total_pages=total_pages, page_cmd="好感度排行")
         if img_path:
             yield event.image_result(img_path)
             return
@@ -1626,7 +1666,7 @@ class FavourManagerTool(Star):
         title = f"📊 当前会话好感度列表 (SID: {self._escape_markdown(session_id)}) - 第 {page}/{total_pages} 页"
         await self._send_chunked_t2i(event, title, headers, rows)
 
-    @filter.command("查询全局好感度", alias={'全局好感度', '查全局好感度', '查看全局好感度', '全局好感度查询'})
+    @filter.command("全局好感度排行", alias={'查询全局好感度', '全局好感度', '查全局好感度', '查看全局好感度', '全局好感度查询'})
     async def query_global_favour(self, event: AstrMessageEvent, page: int = 1):
         """查询全局模式下的好感度 (仅Bot管理员，支持分页)"""
         if not await self._check_permission(event, PermLevel.SUPERUSER):
@@ -1637,8 +1677,9 @@ class FavourManagerTool(Star):
         if not records:
             yield event.plain_result("暂无全局好感度记录。")
             return
-            
-        records = await self._sort_records(event, records)
+
+        # 同上：排行固定按好感度倒序，同分按 user_id 排
+        records = sorted(records, key=lambda r: (-r.favour, str(r.user_id)))
         
         page_size = 20
         total_records = len(records)
@@ -1655,8 +1696,8 @@ class FavourManagerTool(Star):
         # 优先出卡片图；失败再回退 markdown 表格
         img_path = await self._render_favour_card(
             event, page_records, records, title_map,
-            title="全局好感度记录", scope="全局",
-            page=page, total_pages=total_pages, page_cmd="查询全局好感度")
+            title="全局好感度排行", scope="全局",
+            page=page, total_pages=total_pages, page_cmd="全局好感度排行")
         if img_path:
             yield event.image_result(img_path)
             return
@@ -2081,7 +2122,7 @@ class FavourManagerTool(Star):
 
         msg.append("\n[通用命令]")
         msg.append("- 查询好感度 [@用户]")
-        msg.append("- 查询当前好感度 [页码]")
+        msg.append("- 好感度排行 [页码]")
         msg.append("- 称号")
         msg.append("- 称号帮助")
         msg.append("- 好感度指令帮助")
@@ -2092,8 +2133,8 @@ class FavourManagerTool(Star):
             msg.append("- 修改关系 @用户 <关系名> <1/0>")
             msg.append("- 解除关系 @用户")
             msg.append("- 清空好感度 @用户")
-            msg.append("- 查询当前好感度 [页码]")
-            msg.append("- 查询全局好感度 [页码]")
+            msg.append("- 好感度排行 [页码]")
+            msg.append("- 全局好感度排行 [页码]")
             msg.append("- 全局修改好感度 @用户 <数值>")
             msg.append("- 全局修改关系 @用户 <关系名> <1/0>")
             msg.append("- 全局解除关系 @用户")
@@ -2113,8 +2154,8 @@ class FavourManagerTool(Star):
 1. 查询好感度
    用法: /查询好感度 [@用户]
    示例: /查询好感度 @糯米茨
-   用法: /查询当前好感度 [页码]
-   示例: /查询当前好感度 2
+   用法: /好感度排行 [页码]
+   示例: /好感度排行 2
 
 2. 修改好感度 (Bot管理员)
    用法: /修改好感度 @用户 <数值>

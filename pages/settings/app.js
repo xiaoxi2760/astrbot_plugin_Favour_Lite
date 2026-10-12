@@ -536,16 +536,6 @@ function renderBasicTab() {
               ],
               hint: '影响提升好感度的宽容度'
             })}
-            ${uiSelect({
-              path: 'group_sort_by',
-              label: '列表排序方式',
-              options: [
-                ['default', '默认（添加时间）'],
-                ['favour', '按好感度降序'],
-                ['nickname', '按用户昵称'],
-                ['userid', '按用户 ID']
-              ]
-            })}
           </div>
         `
       })}
