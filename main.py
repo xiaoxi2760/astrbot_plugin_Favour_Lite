@@ -20,6 +20,7 @@ from .utils import is_valid_userid
 from .permissions import PermLevel, PermissionManager
 from .storage import FavourDBManager, FavourRecord
 from .config_manager import PluginConfigManager
+from . import favour_card
 
 PLUGIN_NAME = "astrbot_plugin_Favour_Lite"
 
@@ -908,6 +909,70 @@ class FavourManagerTool(Star):
                 logger.error(f"生成图片失败 (Page {page_info}): {e}")
                 await event.send(event.plain_result(f"生成图片失败，请检查日志。"))
 
+    # ================= 好感度榜单卡片出图 =================
+    _card_fonts_instance = None
+
+    def _card_fonts(self):
+        """卡片字体只 discover 一次。"""
+        if self._card_fonts_instance is None:
+            self._card_fonts_instance = favour_card.Fonts(None)
+        return self._card_fonts_instance
+
+    async def _render_favour_card(self, event, page_records: List[FavourRecord],
+                                  all_records: List[FavourRecord],
+                                  title_map: Dict[str, str], title: str,
+                                  scope: str, page: int, total_pages: int,
+                                  page_cmd: str) -> Optional[str]:
+        """渲染好感度榜单卡片，返回图片路径。
+
+        统计口径用 all_records（整页所有记录），列表只画当前页。
+        PIL 不可用或渲染失败一律返回 None，由调用方回退到 markdown 表格。
+        """
+        if favour_card.Image is None:
+            return None
+        try:
+            users = []
+            for i, r in enumerate(page_records):
+                uid = str(r.user_id)
+                try:
+                    name = await self._get_user_display_name(event, uid)
+                except Exception:
+                    name = r.username or uid
+                users.append({
+                    "rank": i + 1,
+                    "name": name or uid,
+                    "uid": uid,
+                    "favour": r.favour,
+                    "relationship": r.relationship or "",
+                    "is_unique": bool(r.is_unique),
+                    "title": title_map.get(uid, "-"),
+                })
+
+            favs = [r.favour for r in all_records] or [0]
+            payload = {
+                "title": title,
+                "subtitle": "每一点好感，都是一份心意",
+                "scope": scope,
+                "stats": {
+                    "total": len(all_records),
+                    "max": max(favs),
+                    "min": min(favs),
+                },
+                "users": users,
+                "footer": (f"第 {page}/{total_pages} 页 · 发送「{page_cmd} {page + 1}」翻页"
+                           if total_pages > 1 else f"共 {len(all_records)} 条记录"),
+            }
+
+            # 文件名保持纯 ASCII：部分图床/URL 对中文名编码不稳
+            slug = "session" if scope == "当前会话" else "global"
+            out_path = (self.data_dir / "cards" /
+                        f"favour_{slug}_{page}_{int(datetime.now().timestamp())}.png")
+            return await asyncio.to_thread(
+                favour_card.render_favour_card, payload, out_path, self._card_fonts())
+        except Exception as e:
+            logger.error(f"渲染好感度卡片失败，回退表格: {e}")
+            return None
+
     def _build_favour_levels_prompt(self, current_favour: Optional[int] = None) -> str:
         """根据 favour_levels 配置构建好感度分级规则文本。
         
@@ -1534,20 +1599,30 @@ class FavourManagerTool(Star):
         start_idx = (page - 1) * page_size
         end_idx = start_idx + page_size
         page_records = records[start_idx:end_idx]
-            
+
+        title_map = await self._get_title_display([r.user_id for r in page_records])
+
+        # 优先出卡片图；失败再回退 markdown 表格
+        img_path = await self._render_favour_card(
+            event, page_records, records, title_map,
+            title="当前会话好感度列表", scope="当前会话",
+            page=page, total_pages=total_pages, page_cmd="查询当前好感度")
+        if img_path:
+            yield event.image_result(img_path)
+            return
+
         headers = [
             "| 用户昵称 | 用户ID | 好感度 | 关系 | 唯一 | 称号 |",
             "| :--- | :--- | :---: | :---: | :---: | :--- |"
         ]
         rows = []
-        title_map = await self._get_title_display([r.user_id for r in page_records])
         for r in page_records:
             name = self._escape_markdown(await self._get_user_display_name(event, r.user_id))
             rel = self._escape_markdown(r.relationship or "无")
             uniq = "是" if r.is_unique else "否"
             cake = title_map.get(str(r.user_id), "-")
             rows.append(f"| {name} | {r.user_id} | {r.favour} | {rel} | {uniq} | {cake} |")
-            
+
         title = f"📊 当前会话好感度列表 (SID: {self._escape_markdown(session_id)}) - 第 {page}/{total_pages} 页"
         await self._send_chunked_t2i(event, title, headers, rows)
 
@@ -1575,12 +1650,22 @@ class FavourManagerTool(Star):
         end_idx = start_idx + page_size
         page_records = records[start_idx:end_idx]
             
+        title_map = await self._get_title_display([r.user_id for r in page_records])
+
+        # 优先出卡片图；失败再回退 markdown 表格
+        img_path = await self._render_favour_card(
+            event, page_records, records, title_map,
+            title="全局好感度记录", scope="全局",
+            page=page, total_pages=total_pages, page_cmd="查询全局好感度")
+        if img_path:
+            yield event.image_result(img_path)
+            return
+
         headers = [
             "| 用户ID | 好感度 | 关系 | 唯一 | 称号 |",
             "| :--- | :---: | :---: | :---: | :--- |"
         ]
         rows = []
-        title_map = await self._get_title_display([r.user_id for r in page_records])
         for r in page_records:
             rel = self._escape_markdown(r.relationship or "无")
             uniq = "是" if r.is_unique else "否"

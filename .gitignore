@@ -10,6 +10,7 @@ __pycache__/
 config.json
 config.json.tmp
 backups/
+data/
 
 # 编辑器 / 系统
 .vscode/
