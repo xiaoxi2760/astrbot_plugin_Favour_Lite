@@ -137,13 +137,6 @@ _BOLD = {
     "linux": ("NotoSansCJK-Bold.ttc", "SourceHanSansSC-Bold.otf",
               "wqy-zenhei.ttc", "DroidSansFallbackFull.ttf"),
 }
-_EMOJI = {
-    "win32": ("seguiemj.ttf",),
-    "darwin": ("Apple Color Emoji.ttc",),
-    "linux": ("NotoColorEmoji.ttf",),
-}
-
-
 def _find(candidates):
     for d in _FONT_DIRS:
         for name in candidates:
@@ -162,7 +155,6 @@ class Fonts:
         bold = _find(_BOLD[key]) or reg
         self.reg_path = reg
         self.bold_path = bold
-        self.emoji_path = _find(_EMOJI.get(key, ()))
         self._cache: dict[tuple, object] = {}
 
     def get(self, size_css, bold=False):
@@ -174,19 +166,6 @@ class Fonts:
                 self._cache[k] = ImageFont.truetype(path, size)
             else:
                 self._cache[k] = ImageFont.load_default()
-        return self._cache[k]
-
-    def emoji(self, size_css):
-        size = max(int(size_css * SCALE), 10)
-        k = ("emoji", size)
-        if k not in self._cache:
-            if self.emoji_path:
-                try:
-                    self._cache[k] = ImageFont.truetype(self.emoji_path, size)
-                except Exception:
-                    self._cache[k] = None
-            else:
-                self._cache[k] = None
         return self._cache[k]
 
 
@@ -552,56 +531,30 @@ def render_favour_card(payload: dict, out_path, fonts: Fonts) -> Path:
     return out_path
 
 
-# ================================================================ 档案风个人面板
-# 视觉对齐 astrbot_plugin_denia_core 的「达妮娅观察记录」个人卡：暗梅紫三段渐变底 +
-# 细网格 + 双色径向光晕 + 左侧 tier bar + 渐变页眉横幅 + 外框圆角裁切。
+# ================================================================ 个人面板
+# 版式对齐 astrbot_plugin_denia_core 的「达妮娅观察记录」个人卡：页眉横幅 +
+# 环形头像 + RANK 徽章 + 数值大字 + 引文框 + DETAIL 分栏 + 三联统计 +
+# 两格详情 + 页脚。配色改用小蛋糕的粉彩玻璃质感，与本插件的排行榜卡统一。
 #
 # denia_core 里依赖其自有数据的区块（观察余额 / 自然恢复上限 / 近 7 次变化柱状图 /
-# LLM 评价 / 最近变化原因）在 Favour Lite 没有对应数据，一律不画、区块直接删掉，
-# 用等价的真实字段顶上：水位条=当前好感度在 [下限, 上限] 区间中的位置，
-# 最近互动=last_interaction，首次记录=created_at。
+# LLM 评价 / 最近变化原因）本插件没有对应数据，一律不画、区块直接删掉，用等价的
+# 真实字段顶上：水位条 = 当前好感度在 [下限, 上限] 区间中的位置，
+# 最近互动 = last_interaction，首次记录 = created_at。
 
-A_ACCENT = (212, 139, 184)     # #d48bb8
-A_ACCENT_2 = (242, 199, 222)   # #f2c7de
-A_GOLD = (241, 212, 138)       # #f1d48a
-A_TEXT_1 = (247, 238, 246)     # #f7eef6
-A_BG_TOP = (21, 12, 29)
-A_BG_MID = (34, 19, 43)
-A_BG_BOT = (15, 8, 20)
-A_HDR_TOP = (81, 49, 88)       # rgba(88,54,96,.72) 叠在卡片顶部
-A_HDR_BOT = (39, 23, 50)       # rgba(41,22,54,.72)
-A_GRID_LINE = (242, 199, 222, 9)
-A_TIER = (A_ACCENT, A_GOLD, A_ACCENT)
+P_ACCENT = (233, 84, 107)        # 主粉
+P_ACCENT_DEEP = (216, 71, 98)    # 深粉（数值 / 小标题）
+P_ACCENT_SOFT = (255, 226, 236)  # 浅粉（引文框底）
+P_WARM = (247, 175, 150)         # 水位条渐变末端（粉 → 暖橘）
+P_TEXT = (90, 70, 80)            # 正文
+P_TEXT_SOFT = (176, 138, 152)    # 次要文字
 
-# 各区块高度（CSS 像素，与 denia_core 的 profile.html 盒模型对齐）
-_A_MAIN = 28 + 192 + 18
-_A_STAT = 12 + 25 + 5 + 10 + 12
-_A_STATUS = 12 + 10 + 7 + 15 + 9 + 4 + 5 + 11 + 12
-
-
-def _arounded(canvas, box, radius, fill=None, outline=None, width=1):
-    """圆角矩形画在透明层再合成，避免直接 Draw 打穿已画的像素。"""
-    layer = Image.new('RGBA', canvas.size, (0, 0, 0, 0))
-    ImageDraw.Draw(layer).rounded_rectangle(box, radius=radius, fill=fill,
-                                            outline=outline, width=width)
-    canvas.alpha_composite(layer)
-
-
-def _asw(d, text, font, spacing):
-    """带字距的文本宽度。"""
-    if not text:
-        return 0.0
-    step = s(spacing)
-    return sum(d.textlength(ch, font=font) for ch in text) + step * (len(text) - 1)
-
-
-def _aspaced(d, xy, text, font, fill, spacing):
-    """带字距画一行（原 CSS letter-spacing）。"""
-    x, y = xy
-    step = s(spacing)
-    for ch in text:
-        d.text((x, y), ch, font=font, fill=fill)
-        x += d.textlength(ch, font=font) + step
+_P_W = 540                 # 画布宽（CSS px）
+_P_MARGIN = 18             # 画布外留白，露出背景渐变与泡泡
+_P_PAD = 26                # 卡片左右内边距
+_P_HDR = 76                # 页眉横幅高
+_P_MAIN = 196              # 头像 + 信息栏总高
+_P_STAT = 62               # 三联统计单格高
+_P_STATUS = 88             # 两格详情单格高
 
 
 def _awrap(d, text, font, max_w):
@@ -639,116 +592,57 @@ def _awrap(d, text, font, max_w):
     return lines or ['']
 
 
-def _atop_bar(w, h, radius, c0, c1):
-    """上圆角、下直角的竖渐变柱。"""
-    w, h = max(w, 1), max(h, 1)
-    img = vgrad(w, h, [(0.0, c0), (1.0, c1)]).convert('RGBA')
-    mask = Image.new('L', (w, h), 0)
-    md = ImageDraw.Draw(mask)
-    md.rounded_rectangle((0, 0, w - 1, h - 1), radius=radius, fill=255)
-    md.rectangle((0, h - radius, w - 1, h - 1), fill=255)
-    img.putalpha(mask)
-    return img
+def _asw(d, text, font, spacing):
+    """带字距的文本宽度。"""
+    if not text:
+        return 0.0
+    step = s(spacing)
+    return sum(d.textlength(ch, font=font) for ch in text) + step * (len(text) - 1)
 
 
-def _acard_base(w, h):
-    """档案卡底：三段渐变 + 网格 + 两团径向光晕 + 左侧 tier bar。"""
-    canvas = vgrad(w, h, [(0.0, A_BG_TOP), (0.55, A_BG_MID), (1.0, A_BG_BOT)]).convert('RGBA')
-
-    grid = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-    gd = ImageDraw.Draw(grid)
-    step = s(24)
-    for x in range(0, w, step):
-        gd.line([(x, 0), (x, h)], fill=A_GRID_LINE, width=1)
-    for y in range(0, h, step):
-        gd.line([(0, y), (w, y)], fill=A_GRID_LINE, width=1)
-    canvas.alpha_composite(grid)
-
-    glow = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-    gr = s(190)
-    ImageDraw.Draw(glow).ellipse(
-        (int(w * 0.72) - gr, int(h * 0.18) - gr, int(w * 0.72) + gr, int(h * 0.18) + gr),
-        fill=(*A_ACCENT, 42))
-    gr2 = s(170)
-    ImageDraw.Draw(glow).ellipse(
-        (int(w * 0.12) - gr2, int(h * 0.72) - gr2, int(w * 0.12) + gr2, int(h * 0.72) + gr2),
-        fill=(*A_GOLD, 22))
-    canvas.alpha_composite(glow.filter(ImageFilter.GaussianBlur(s(60))))
-
-    bar_w = s(5)
-    halo = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-    halo.paste(Image.new('RGBA', (bar_w, h), (*A_ACCENT, 64)), (0, 0))
-    canvas.alpha_composite(halo.filter(ImageFilter.GaussianBlur(s(6))))
-    bar = vgrad(bar_w, h, [(0.0, A_TIER[0]), (0.5, A_TIER[1]), (1.0, A_TIER[2])]).convert('RGBA')
-    canvas.paste(bar, (0, 0))
-    return canvas
+def _aspaced(d, xy, text, font, fill, spacing):
+    """带字距画一行（原 CSS letter-spacing）。"""
+    x, y = xy
+    step = s(spacing)
+    for ch in text:
+        d.text((x, y), ch, font=font, fill=fill)
+        x += d.textlength(ch, font=font) + step
 
 
-def _aheader(card, fonts, title, subtitle, title_size=17):
-    """页眉横幅：渐变底 + 底边线 + 左右三道装饰 + 居中标题。"""
-    W = card.width
-    hdr_h = s(82)
-    card.alpha_composite(
-        vgrad(W, hdr_h, [(0.0, A_HDR_TOP), (1.0, A_HDR_BOT)]).convert('RGBA'), (0, 0))
-    d = ImageDraw.Draw(card)
-    d.line([(0, hdr_h - 1), (W, hdr_h - 1)], fill=(*A_ACCENT, 89), width=1)
-    for side in (1, -1):
-        dy = hdr_h // 2 - s(12)
-        for wd in (s(24), s(15), s(8)):
-            x0 = s(24) if side == 1 else W - s(24) - wd
-            d.rounded_rectangle((x0, dy, x0 + wd, dy + s(2)), radius=s(2),
-                                fill=(*A_ACCENT, 184))
-            dy += s(7)
-    f_title = fonts.get(title_size, bold=True)
-    f_sub = fonts.get(10)
-    tw = _asw(d, title, f_title, 4)
-    _aspaced(d, ((W - tw) / 2, s(24)), title, f_title, (255, 255, 255, 255), 4)
-    tw = _asw(d, subtitle, f_sub, 4)
-    _aspaced(d, ((W - tw) / 2, s(60)), subtitle, f_sub, (*A_ACCENT_2, 184), 4)
+def _pbox(img, box, radius, fill, border=None):
+    """纯色圆角块（画在透明层再合成，避免打穿已画像素）。"""
+    layer = Image.new('RGBA', img.size, (0, 0, 0, 0))
+    ld = ImageDraw.Draw(layer)
+    ld.rounded_rectangle(box, radius=radius, fill=fill)
+    if border:
+        ld.rounded_rectangle(box, radius=radius, outline=border, width=max(s(1), 2))
+    img.alpha_composite(layer)
 
 
-def _afooter(card, fonts, text):
-    """页脚条 + 居中字距文案。"""
-    W, H = card.width, card.height
-    f_y = H - s(34)
-    card.alpha_composite(Image.new('RGBA', (W, s(34)), (*A_TEXT_1, 15)), (0, f_y))
-    d = ImageDraw.Draw(card)
-    d.line([(0, f_y), (W, f_y)], fill=(*A_ACCENT, 51), width=1)
-    f_foot = fonts.get(10)
-    tw = _asw(d, text, f_foot, 2)
-    _aspaced(d, ((W - tw) / 2, f_y + s(12)), text, f_foot, (*A_ACCENT_2, 102), 2)
-
-
-def _aseal(card):
-    """外框描边 + 圆角透明裁切。"""
-    W, H = card.width, card.height
-    _arounded(card, (0, 0, W - 1, H - 1), s(22), outline=(*A_ACCENT, 56), width=s(1))
-    mask = Image.new('L', (W, H), 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, W - 1, H - 1), radius=s(22), fill=255)
-    card.putalpha(mask)
-
-
-def _aavatar(card, cx, cy, size, fallback_char, font):
-    """贴圆形头像占位：深底 + 首字。"""
-    av = Image.new('RGBA', (size, size), (26, 19, 48, 255))
+def _pavatar(img, cx, cy, size, fallback_char, font):
+    """粉彩环形头像：外圈深粉 + 内圈浅粉，首字占位。"""
+    d = ImageDraw.Draw(img)
+    r = size // 2
+    d.ellipse([cx - r, cy - r, cx + r, cy + r],
+              outline=P_ACCENT + (255,), width=max(s(2), 3))
+    d.ellipse([cx - r + s(5), cy - r + s(5), cx + r - s(5), cy + r - s(5)],
+              outline=(255, 190, 212, 255), width=max(s(1.5), 2))
+    inner = size - s(10)
+    av = Image.new('RGBA', (inner, inner), (255, 238, 245, 255))
     ad = ImageDraw.Draw(av)
     ch = (fallback_char or '?').strip()[:1] or '?'
     bb = ad.textbbox((0, 0), ch, font=font)
-    ad.text((size / 2 - (bb[2] - bb[0]) / 2 - bb[0],
-             size / 2 - (bb[3] - bb[1]) / 2 - bb[1]),
-            ch, font=font, fill=(*A_ACCENT_2, 255))
-    mask = Image.new('L', (size, size), 0)
-    ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
+    ad.text(((inner - (bb[2] - bb[0])) / 2 - bb[0],
+             (inner - (bb[3] - bb[1])) / 2 - bb[1]),
+            ch, font=font, fill=P_ACCENT + (255,))
+    mask = Image.new('L', av.size, 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, inner - 1, inner - 1), fill=255)
     av.putalpha(mask)
-    card.paste(av, (int(cx - size // 2), int(cy - size // 2)), av)
+    img.alpha_composite(av, (int(cx - inner / 2), int(cy - inner / 2)))
 
 
 def render_profile_card(payload: dict, out_path, fonts: Fonts) -> Path:
     """个人好感度面板。payload 字段见模块 docstring。"""
-    W = s(540)
-    PAD = s(26)   # 卡片左右内容边距
-    GUT = s(46)   # 引文框左右 padding
-
     rank = str(payload.get('rank') or '-')
     total_users = int(payload.get('total_users') or 0)
     score = int(payload.get('score') or 0)
@@ -761,161 +655,187 @@ def render_profile_card(payload: dict, out_path, fonts: Fonts) -> Path:
     uniq = bool(payload.get('is_unique'))
     last_t = str(payload.get('last_interaction') or '').strip() or '--'
     created = str(payload.get('created_at') or '').strip() or '--'
-    min_f = int(payload.get('min_favour') if payload.get('min_favour') is not None else -100)
-    max_f = int(payload.get('max_favour') if payload.get('max_favour') is not None else 100)
-    footer = str(payload.get('footer') or '').strip() or '好感度插件 · Favour Lite Archive'
+    min_f = payload.get('min_favour')
+    max_f = payload.get('max_favour')
+    min_f = -100 if min_f is None else int(min_f)
+    max_f = 100 if max_f is None else int(max_f)
+    footer = str(payload.get('footer') or '').strip() or '好感度插件 · Favour Lite'
 
-    # ---- 先量高度
+    # ---- 先量高度（只有引文框随行数变化）
+    # 折行探针的宽度必须等于引文框里文字真正可用的宽度，否则会算少一行、
+    # 让文字顶穿右边框。左右各留 26 内缩 + 10 右边距。
     probe = ImageDraw.Draw(Image.new('RGBA', (8, 8)))
     summary = f"称号 {title}　·　等级 {level}　·　排名 {rank} / {total_users}"
-    f_sum = fonts.get(15)
-    sum_lines = _awrap(probe, summary, f_sum, W - PAD * 2 - GUT)
-    comment_h = s(17 + 10 + 8) + len(sum_lines) * s(26) + s(17)
+    f_sum = fonts.get(13)
+    quote_text_w = s(_P_W - 2 * (_P_MARGIN + _P_PAD) - 26 - 10)
+    sum_lines = _awrap(probe, summary, f_sum, quote_text_w)
+    # 全程用 CSS px 记账，画的时候再 s() 换算，避免像素/CSS 混算把高度撑大一倍
+    quote_h = 13 + 14 + 8 + len(sum_lines) * 24 + 13
 
-    H = s(82 + _A_MAIN) + comment_h + s(18) \
-        + s(1 + 33) + s(_A_STAT + 16) + s(_A_STATUS + 16) + s(34)
+    H = (_P_MARGIN * 2 + _P_HDR + _P_MAIN + quote_h + 18
+         + (1 + 13) + (12 + 8) + _P_STAT + 16 + _P_STATUS + 45 + _P_PAD)
 
-    card = _acard_base(W, H)
-    _aheader(card, fonts, '好感度档案', 'FAVOUR ARCHIVE', 17)
-    d = ImageDraw.Draw(card)
+    W, HH = s(_P_W), s(H)
+    margin = s(_P_MARGIN)
+    card_box = [margin, margin, W - margin, HH - margin]
+    img = scene(W, HH, card_box)
+    img = Image.alpha_composite(
+        img, top_wash(W, HH, card_box, s(26), (255, 205, 226), s(_P_HDR + 22)))
+    d = ImageDraw.Draw(img)
+
+    ix = margin + s(_P_PAD)                 # 内容左缘
+    iw = W - ix * 2                         # 内容宽度
+    cx = W // 2
+
+    # ---- 页眉横幅
+    f_hdr = fonts.get(19, bold=True)
+    hdr_t = '好感度档案'
+    d.text((cx - d.textlength(hdr_t, font=f_hdr) / 2, margin + s(12)),
+           hdr_t, font=f_hdr, fill=TITLE_C + (255,))
+    f_hsub = fonts.get(9.5)
+    hdr_s = 'FAVOUR ARCHIVE'
+    _aspaced(d, (cx - _asw(d, hdr_s, f_hsub, 3) / 2, margin + s(40)),
+             hdr_s, f_hsub, ACCENT_TEXT + (200,), 3)
 
     # ---- main：环形头像 + 信息栏
-    main_y = s(82) + s(28)
-    av_cx, av_cy = s(26 + 59), main_y + s(59)
-    d.ellipse((av_cx - s(59), av_cy - s(59), av_cx + s(59), av_cy + s(59)),
-              outline=(*A_GOLD, 158), width=s(2))
-    d.ellipse((av_cx - s(52), av_cy - s(52), av_cx + s(52), av_cy + s(52)),
-              outline=(*A_ACCENT, 140), width=1)
-    _aavatar(card, av_cx, av_cy, s(104), name[:1], fonts.get(56, bold=True))
-    d = ImageDraw.Draw(card)
+    y = margin + s(_P_HDR + 12)
+    av_r = s(52)
+    _pavatar(img, ix + av_r, y + av_r, av_r * 2, name[:1], fonts.get(50, bold=True))
+    d = ImageDraw.Draw(img)
 
-    ix = s(26 + 118 + 24)
-    iw = W - ix - PAD
-    y = main_y
-    f_user = fonts.get(27, bold=True)
-    d.text((ix, y), _ellipsis(d, name, f_user, iw), font=f_user, fill=(255, 255, 255, 255))
-    y += s(40)
+    tx = ix + av_r * 2 + s(20)
+    tw_avail = W - tx - margin - s(_P_PAD)
 
-    f_badge = fonts.get(11)
+    f_name = fonts.get(24, bold=True)
+    d.text((tx, y + s(2)), _ellipsis(d, name, f_name, tw_avail),
+           font=f_name, fill=TITLE_C + (255,))
+
+    # RANK 徽章
+    f_badge = fonts.get(10)
     badge = 'RANK #' + rank
-    bw = d.textlength(badge, font=f_badge) + s(20)
-    _arounded(card, (ix, y, ix + bw, y + s(23)), s(6),
-              fill=(0, 0, 0, 87), outline=(*A_ACCENT, 66), width=1)
-    d = ImageDraw.Draw(card)
-    d.text((ix + s(10), y + s(6)), badge, font=f_badge, fill=(*A_TEXT_1, 148))
-    y += s(33)
+    bw = int(d.textlength(badge, font=f_badge) + s(18))
+    by = y + s(38)
+    _pbox(img, (tx, by, tx + bw, by + s(21)), s(10), PILL_BG, PILL_BORDER)
+    d = ImageDraw.Draw(img)
+    d.text((tx + s(9), by + s(4)), badge, font=f_badge, fill=ACCENT_TEXT + (255,))
 
-    f_tag = fonts.get(13)
-    tag = _ellipsis(d, title, f_tag, s(330))
-    thw = d.textlength(tag, font=f_tag) + s(28)
-    _arounded(card, (ix, y, ix + thw, y + s(27)), s(999),
-              fill=(*A_ACCENT, 33), outline=(*A_ACCENT, 191), width=1)
-    d = ImageDraw.Draw(card)
-    d.text((ix + s(14), y + s(7)), tag, font=f_tag, fill=(*A_ACCENT_2, 255))
-    y += s(27 + 16)
+    # 称号胶囊
+    f_tag = fonts.get(12)
+    tag = _ellipsis(d, title, f_tag, tw_avail - s(24))
+    tgw = int(d.textlength(tag, font=f_tag) + s(24))
+    ty = by + s(29)
+    _pbox(img, (tx, ty, tx + tgw, ty + s(25)), s(999), (255, 240, 246, 255),
+          PILL_BORDER)
+    d = ImageDraw.Draw(img)
+    d.text((tx + s(12), ty + s(5)), tag, font=f_tag, fill=ACCENT_TEXT + (255,))
 
-    f_score = fonts.get(52, bold=True)
-    f_unit = fonts.get(12)
+    # 数值大字
+    sy = ty + s(38)
+    f_score = fonts.get(46, bold=True)
     score_txt = str(score)
-    d.text((ix, y), score_txt, font=f_score, fill=(255, 255, 255, 255))
-    d.text((ix + d.textlength(score_txt, font=f_score) + s(12), y + s(30)),
-           '好感度 / AFFECTION', font=f_unit, fill=(*A_TEXT_1, 117))
-    y += s(60)
-    f_rel = fonts.get(13, bold=True)
-    rel_line = '关系 ' + rel + ('（唯一）' if uniq else '')
-    d.text((ix, y), _ellipsis(d, rel_line, f_rel, iw),
-           font=f_rel, fill=(*A_GOLD, 255))
+    d.text((tx, sy), score_txt, font=f_score, fill=P_ACCENT_DEEP + (255,))
+    f_unit = fonts.get(11)
+    d.text((tx + d.textlength(score_txt, font=f_score) + s(10), sy + s(28)),
+           '好感度 / AFFECTION', font=f_unit, fill=P_TEXT_SOFT + (255,))
 
-    # ---- 引文框（对应 denia_core 的 DENIA'S COMMENT）
-    cy = main_y + s(_A_MAIN) - s(18)
-    cb_x0, cb_x1 = PAD, W - PAD
-    ch_y1 = cy + comment_h
-    _arounded(card, (cb_x0, cy, cb_x1, ch_y1), s(10), fill=(0, 0, 0, 71))
-    d = ImageDraw.Draw(card)
-    d.rectangle((cb_x0, cy + s(8), cb_x0 + s(4), ch_y1 - s(8)), fill=(*A_ACCENT, 255))
-    d.text((cb_x0 + s(6), cy + s(4)), '"', font=fonts.get(32, bold=True),
-           fill=(*A_ACCENT, 107))
-    _aspaced(d, (cb_x0 + s(28), cy + s(17)), "FAVOUR PROFILE",
-             fonts.get(10), (*A_ACCENT_2, 148), 2)
-    ty = cy + s(17 + 10 + 8 + 5)
+    # 关系行
+    f_rel = fonts.get(12, bold=True)
+    d.text((tx, sy + s(60)),
+           _ellipsis(d, '关系 ' + rel + ('（唯一）' if uniq else ''),
+                     f_rel, tw_avail),
+           font=f_rel, fill=P_ACCENT + (255,))
+
+    # ---- 引文框
+    qy = margin + s(_P_HDR + _P_MAIN + 12)
+    qx0, qx1 = ix, W - ix
+    _pbox(img, (qx0, qy, qx1, qy + s(quote_h)), s(12), P_ACCENT_SOFT + (255,))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle((qx0, qy + s(6), qx0 + s(4), qy + s(quote_h) - s(6)),
+                        radius=s(2), fill=P_ACCENT + (255,))
+    d.text((qx0 + s(8), qy + s(2)), '"', font=fonts.get(26, bold=True),
+           fill=(255, 150, 180, 255))
+    lbl = 'FAVOUR PROFILE'
+    _aspaced(d, (qx0 + s(26), qy + s(13)), lbl, fonts.get(9),
+             ACCENT_TEXT + (200,), 2)
+    ty2 = qy + s(13 + 14 + 8)
     for ln in sum_lines:
-        d.text((cb_x0 + s(28), ty), ln, font=f_sum, fill=(*A_TEXT_1, 235))
-        ty += s(26)
+        d.text((qx0 + s(26), ty2), ln, font=f_sum, fill=P_TEXT + (255,))
+        ty2 += s(24)
 
     # ---- 分隔线 + 段标题
-    y = ch_y1 + s(18)
-    d.line([(PAD, y), (W - PAD, y)], fill=(*A_ACCENT, 56), width=1)
+    y = qy + s(quote_h) + s(18)
+    d.line([(ix, y), (W - ix, y)], fill=ROW_SEP, width=1)
     y += s(13)
-    d.rounded_rectangle((PAD, y, PAD + s(4), y + s(12)), radius=s(3),
-                        fill=(*A_ACCENT, 255))
-    _aspaced(d, (PAD + s(11), y - s(1)), 'DETAIL // 好感度详情',
-             fonts.get(11, bold=True), (*A_ACCENT_2, 255), 2)
+    d.rounded_rectangle((ix, y, ix + s(4), y + s(12)), radius=s(3),
+                        fill=P_ACCENT + (255,))
+    _aspaced(d, (ix + s(11), y - s(1)), 'DETAIL // 好感度详情',
+             fonts.get(10, bold=True), P_ACCENT_DEEP + (255,), 2)
 
     # ---- 三联统计
-    y += s(12 + 12 + 8)
+    y += s(12 + 8)
     gap = s(10)
-    bw3 = (W - PAD * 2 - gap * 2) // 3
-    f_num = fonts.get(25, bold=True)
-    f_lbl = fonts.get(10)
-    stat_h = s(_A_STAT)
+    bw3 = (iw - gap * 2) // 3
+    f_num = fonts.get(21, bold=True)
+    f_lbl = fonts.get(9.5)
     cells = [(rank, '当前排名'),
-             (_ellipsis(d, level, f_num, bw3 - s(12)), '当前等级'),
+             (_ellipsis(d, level, f_num, bw3 - s(10)), '当前等级'),
              ('是' if uniq else '否', '唯一关系')]
-    for i, (num, lbl) in enumerate(cells):
-        x0 = PAD + i * (bw3 + gap)
-        _arounded(card, (x0, y, x0 + bw3, y + stat_h), s(10),
-                  fill=(*A_TEXT_1, 14), outline=(*A_ACCENT, 56), width=1)
-        d = ImageDraw.Draw(card)
-        d.text((x0 + bw3 / 2, y + s(12)), num, font=f_num,
-               fill=(*A_ACCENT_2, 255), anchor='ma')
-        d.text((x0 + bw3 / 2, y + s(12 + 25 + 5)), lbl, font=f_lbl,
-               fill=(*A_TEXT_1, 110), anchor='ma')
+    for i, (num, cell_lbl) in enumerate(cells):
+        x0 = ix + i * (bw3 + gap)
+        box = (x0, y, x0 + bw3, y + s(_P_STAT))
+        _pbox(img, box, s(10), (255, 252, 253, 255), SUB_CARD_BORDER)
+        d = ImageDraw.Draw(img)
+        d.text((x0 + bw3 / 2, y + s(10)), num, font=f_num,
+               fill=P_ACCENT_DEEP + (255,), anchor='ma')
+        d.text((x0 + bw3 / 2, y + s(10 + 21 + 4)), cell_lbl, font=f_lbl,
+               fill=P_TEXT_SOFT + (255,), anchor='ma')
 
     # ---- 两格详情
-    y += stat_h + s(16)
+    y += s(_P_STAT + 16)
     gap2 = s(12)
-    sw2 = (W - PAD * 2 - gap2) // 2
-    f_slbl = fonts.get(10, bold=True)
-    f_sval = fonts.get(15, bold=True)
-    f_ssub = fonts.get(11)
-    stat_h2 = s(_A_STATUS)
+    sw2 = (iw - gap2) // 2
+    f_slbl = fonts.get(9.5, bold=True)
+    f_sval = fonts.get(14, bold=True)
+    f_ssub = fonts.get(10)
     span = (max_f - min_f) or 1
     pct = min(100, max(0, round((score - min_f) / span * 100)))
     for i in range(2):
-        x0 = PAD + i * (sw2 + gap2)
-        _arounded(card, (x0, y, x0 + sw2, y + stat_h2), s(10),
-                  fill=(*A_TEXT_1, 14), outline=(*A_ACCENT, 56), width=1)
-        d = ImageDraw.Draw(card)
-        tx = x0 + s(14)
+        x0 = ix + i * (sw2 + gap2)
+        box = (x0, y, x0 + sw2, y + s(_P_STATUS))
+        _pbox(img, box, s(10), (255, 252, 253, 255), SUB_CARD_BORDER)
+        d = ImageDraw.Draw(img)
+        tx2 = x0 + s(14)
         if i == 0:
-            d.text((tx, y + s(12)), '◆ 好感度水位', font=f_slbl, fill=(*A_TEXT_1, 112))
-            d.text((tx, y + s(29)), f'{score} 好感度', font=f_sval, fill=(*A_ACCENT_2, 255))
-            bar_y = y + s(53)
-            d.rounded_rectangle((tx, bar_y, x0 + sw2 - s(14), bar_y + s(4)),
-                                radius=s(3), fill=(*A_ACCENT, 51))
+            d.text((tx2, y + s(11)), '◆ 好感度水位', font=f_slbl,
+                   fill=P_TEXT_SOFT + (255,))
+            d.text((tx2, y + s(27)), f'{score} 好感度', font=f_sval,
+                   fill=P_ACCENT_DEEP + (255,))
+            bar_y = y + s(50)
+            d.rounded_rectangle((tx2, bar_y, x0 + sw2 - s(14), bar_y + s(5)),
+                                radius=s(3), fill=(255, 224, 237, 255))
             if pct > 0:
-                fw = max(s(4), int((sw2 - s(28)) * pct / 100))
-                fill_img = vgrad(fw, s(4), [(0.0, A_ACCENT), (1.0, A_GOLD)]).convert('RGBA')
-                fmask = Image.new('L', fill_img.size, 0)
-                ImageDraw.Draw(fmask).rounded_rectangle(
-                    (0, 0, fw - 1, s(4) - 1), radius=s(3), fill=255)
-                fill_img.putalpha(fmask)
-                card.alpha_composite(fill_img, (tx, bar_y))
-                d = ImageDraw.Draw(card)
-            d.text((tx, y + s(62)), f'下限 {min_f}｜上限 {max_f}　·　{pct}%',
-                   font=f_ssub, fill=(*A_TEXT_1, 122))
+                fw = max(s(5), int((sw2 - s(28)) * pct / 100))
+                img.alpha_composite(
+                    pill(fw, s(5), P_ACCENT, P_WARM, s(3)), (tx2, bar_y))
+                d = ImageDraw.Draw(img)
+            d.text((tx2, y + s(62)), f'下限 {min_f}｜上限 {max_f}　·　{pct}%',
+                   font=f_ssub, fill=P_TEXT_SOFT + (255,))
         else:
-            d.text((tx, y + s(12)), '◆ 最近互动', font=f_slbl, fill=(*A_TEXT_1, 112))
-            d.text((tx, y + s(29)),
-                   _ellipsis(d, last_t, f_sval, sw2 - s(28)),
-                   font=f_sval, fill=(*A_ACCENT_2, 255))
-            d.text((tx, y + s(62)), _ellipsis(d, '首次记录 ' + created, f_ssub, sw2 - s(28)),
-                   font=f_ssub, fill=(*A_TEXT_1, 122))
+            d.text((tx2, y + s(11)), '◆ 最近互动', font=f_slbl,
+                   fill=P_TEXT_SOFT + (255,))
+            d.text((tx2, y + s(27)), _ellipsis(d, last_t, f_sval, sw2 - s(28)),
+                   font=f_sval, fill=P_ACCENT_DEEP + (255,))
+            d.text((tx2, y + s(62)),
+                   _ellipsis(d, '首次记录 ' + created, f_ssub, sw2 - s(28)),
+                   font=f_ssub, fill=P_TEXT_SOFT + (255,))
 
-    _afooter(card, fonts, footer)
-    _aseal(card)
+    # ---- 页脚
+    f_ft = fonts.get(9)
+    d.text((cx - d.textlength(footer, font=f_ft) / 2,
+            HH - margin - s(_P_PAD) - s(18)), footer,
+           font=f_ft, fill=SUBTITLE_C + (255,))
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    card.convert('RGB').save(out_path, 'PNG')
+    img.convert('RGB').save(out_path, 'PNG')
     return out_path

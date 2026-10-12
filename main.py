@@ -995,7 +995,7 @@ class FavourManagerTool(Star):
                 "created_at": self._fmt_dt(record.created_at) if record else "",
                 "min_favour": self.min_favour_value,
                 "max_favour": self.max_favour_value,
-                "footer": "好感度插件 · Favour Lite Archive",
+                "footer": "好感度插件 · Favour Lite",
             }
             out_path = (self.data_dir / "cards" /
                         f"profile_{int(datetime.now().timestamp())}.png")
