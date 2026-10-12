@@ -18,6 +18,13 @@
 - **`favour_card.py`**：纯 PIL 渲染，不 import astrbot、不碰数据库；个人面板与排行榜卡各一套绘制
 - **`.gitignore`**：忽略 `__pycache__/`、`*.db`、`config.json`、`backups/`、`data/` 等运行期产物，避免含用户数据的文件误入库
 
+### 修复
+
+- **出图后报错 `'PosixPath' object has no attribute 'startswith'`**：`favour_card` 的两个渲染函数返回的是 `Path`，直接喂给 `event.image_result()` 会炸——AstrBot 的 `image_result(url_or_path: str)` 内部要先 `url_or_path.startswith("http")` 判断是网络图还是本地图。现渲染层统一返回 `str`，调用侧再兜一层；`查询好感度` / `好感度排行` / `全局好感度排行` 三条指令全部受影响
+- **卡片高度被撑大一倍**：个人面板算高度时 `quote_h` 已是像素值，却又和用 CSS px 记账的高度公式相加
+- **引文框文字顶穿右边框**：折行探针给的宽度大于框内实际可用宽度，超长称号时会少算一行
+- **全透明头像渲成黑圆**：`getbbox()` 为空说明没有可用像素，改回退昵称首字
+
 ### 变更
 
 - **排行榜指令更名**：`查询当前好感度` → **`好感度排行`**，`查询全局好感度` → **`全局好感度排行`**；旧名全部保留为 alias，老用户不用改习惯

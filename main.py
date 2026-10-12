@@ -952,8 +952,10 @@ class FavourManagerTool(Star):
             slug = "session" if scope == "当前会话" else "global"
             out_path = (self.data_dir / "cards" /
                         f"favour_{slug}_{page}_{int(datetime.now().timestamp())}.png")
-            return await asyncio.to_thread(
-                favour_card.render_favour_card, payload, out_path, self._card_fonts())
+            # 渲染函数已保证返回 str；这里再 str() 一次是兜底，
+            # 防止以后有人改动渲染层又把它变成 Path（image_result 只吃 str）
+            return str(await asyncio.to_thread(
+                favour_card.render_favour_card, payload, out_path, self._card_fonts()))
         except Exception as e:
             logger.error(f"渲染好感度卡片失败，回退表格: {e}")
             return None
@@ -1010,8 +1012,9 @@ class FavourManagerTool(Star):
                 payload["avatar"] = None
             out_path = (self.data_dir / "cards" /
                         f"profile_{int(datetime.now().timestamp())}.png")
-            return await asyncio.to_thread(
-                favour_card.render_profile_card, payload, out_path, self._card_fonts())
+            # 同上：渲染层保证 str，这里再兜一层，image_result 不接受 Path
+            return str(await asyncio.to_thread(
+                favour_card.render_profile_card, payload, out_path, self._card_fonts()))
         except Exception as e:
             logger.error(f"渲染个人好感度面板失败，回退文本: {e}")
             return None

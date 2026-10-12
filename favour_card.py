@@ -408,7 +408,7 @@ _W = 700            # CSS 画布宽
 _PAD = 26           # 主卡左右内边距
 
 
-def render_favour_card(payload: dict, out_path, fonts: Fonts) -> Path:
+def render_favour_card(payload: dict, out_path, fonts: Fonts) -> str:
     """好感度榜单卡。payload 见模块 docstring。"""
     users = list(payload.get("users") or [])
     stats = payload.get("stats") or {}
@@ -560,7 +560,9 @@ def render_favour_card(payload: dict, out_path, fonts: Fonts) -> Path:
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.convert('RGB').save(out_path, 'PNG')
-    return out_path
+    # 返回 str 而不是 Path：AstrBot 的 event.image_result 内部要
+    # url_or_path.startswith("http")，传 Path 会炸 'PosixPath' has no 'startswith'
+    return str(out_path)
 
 
 # ================================================================ 个人面板
@@ -680,7 +682,7 @@ def _pavatar(img, cx, cy, size, fallback_char, font, avatar=None):
               outline=(255, 190, 212, 255), width=max(s(1.5), 2))
 
 
-def render_profile_card(payload: dict, out_path, fonts: Fonts) -> Path:
+def render_profile_card(payload: dict, out_path, fonts: Fonts) -> str:
     """个人好感度面板。payload 字段见模块 docstring。"""
     rank = str(payload.get('rank') or '-')
     total_users = int(payload.get('total_users') or 0)
@@ -878,4 +880,5 @@ def render_profile_card(payload: dict, out_path, fonts: Fonts) -> Path:
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     img.convert('RGB').save(out_path, 'PNG')
-    return out_path
+    # 同上：返回 str，调用方要直接喂给 event.image_result
+    return str(out_path)
