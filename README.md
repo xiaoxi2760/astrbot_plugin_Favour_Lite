@@ -4,7 +4,7 @@
 
 [![上游项目](https://img.shields.io/badge/基于_Favour_Ultra_v4.3.0-ff69b4?style=for-the-badge)](https://github.com/nuomicici/astrbot_plugin_Favour_Ultra)
 [![许可证](https://img.shields.io/badge/License-Apache--2.0-blue?style=for-the-badge)](LICENSE)
-[![当前版本](https://img.shields.io/badge/当前版本v1.0.0-blue?style=for-the-badge)](#更新日志)
+[![当前版本](https://img.shields.io/badge/当前版本v1.1.0-blue?style=for-the-badge)](#更新日志)
 
 </div>
 
@@ -20,8 +20,9 @@
 - **移除主动搭话子系统**：定时调度器、合成事件推送等相关代码与配置全部删除。
 - **移除会话隔离体系**：会话迁移/同步等功能删除；`_conf_schema.json` 不再提供，全部配置走 WebUI。
 - **新增**：LLM 对话结束后在最后一行显示好感度变动（`❤️/🖤：好感度±X  总好感：Y`），并抽成 `favour_change_line()` 供其他插件（如 [astrbot_plugin_cake_denia](https://github.com/xiaoxi2760/astrbot_plugin_cake_denia)）复用。
+- **回合上游修复**（v1.1.0）：配置原子写与损坏自动恢复、配置纳入自动备份、WebUI 动态项先收集再重渲染、`UNIQUE INDEX` + 并发安全写入、Pydantic v2 datetime 兼容、Prompt 瘦身与注入顺序反转（人设在前）。
 
-三轮精简的详细记录（含删改清单与本地提交号）见 [精简修改说明.md](精简修改说明.md)。
+四轮改动的详细记录（含删改清单与本地提交号）见 [精简修改说明.md](精简修改说明.md)。
 
 ---
 
@@ -33,7 +34,7 @@
 
 *   **沉浸式交互与数值隐射**：好感度变化由 LLM 根据对话内容自动判断，默认不可见、静默执行变更。
 *   **多维动态关系**：支持单边/双边人际关系确立与解除。
-*   **上下文精准注入**：基于 `<FavourDynamicContext>` XML 结构，实时注入好感等级、关系与排他约束，保证人设稳定。
+*   **上下文精准注入**：基于 `<FavourContext>` 结构，实时注入好感等级、关系与上限约束，末尾以 `<MandatoryFooter>` 强化标签输出，降低长对话漏标。
 *   **可视化报表与冷暴力惩罚**：图片报表直观展示排行；多次好感度降低触发真实情绪模拟。
 *   **SQLite 存储 + 自动备份**：定时备份数据库，WebUI 一键创建/恢复/删除/下载备份。
 *   **WebUI 配置面板**：全功能可视化配置与数据管理，支持暗色模式。

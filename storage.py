@@ -13,8 +13,8 @@ from aiofiles.os import path as aio_path
 from sqlmodel import SQLModel, Field, select, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import text
-from sqlalchemy.exc import OperationalError as SAOperationalError
+from sqlalchemy import text, Column, DateTime
+from sqlalchemy.exc import OperationalError as SAOperationalError, IntegrityError as SAIntegrityError
 from astrbot.api import logger
 from .utils import is_valid_userid
 
@@ -51,9 +51,11 @@ class FavourRecord(SQLModel, table=True):
     is_unique: bool = Field(default=False)
     username: str = Field(default="")  # 用户昵称，供 WebUI 数据管理展示
     #################
-    created_at: datetime = Field(default_factory=datetime.now)
-    updated_at: datetime = Field(default_factory=datetime.now)
-    last_interaction: datetime = Field(default_factory=datetime.now)  # 最后互动时间，用于衰减
+    # 用 sa_column 声明而非 Field(default_factory=...)：
+    # Pydantic v2 / 新版 SQLModel 会拒绝 naive datetime（缺时区），导致插件加载即报错。
+    created_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime, default=datetime.now))
+    updated_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime, default=datetime.now, onupdate=datetime.now))
+    last_interaction: Optional[datetime] = Field(default=None, sa_column=Column(DateTime, default=datetime.now))  # 最后互动时间，用于衰减
 
 
 class FavourTitle(SQLModel, table=True):
@@ -72,7 +74,7 @@ class UserTitleGrant(SQLModel, table=True):
 
     user_id: str = Field(primary_key=True)
     title: str = Field(primary_key=True)
-    granted_at: datetime = Field(default_factory=datetime.now)
+    granted_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime, default=datetime.now))
 
 
 class FavourDBManager:
@@ -145,6 +147,23 @@ class FavourDBManager:
                             await conn.execute(text("ALTER TABLE favour_records ADD COLUMN username VARCHAR(128) DEFAULT ''"))
                             logger.info("数据库升级完成（username）。")
                             #################
+
+                        # 添加唯一索引防止重复行（并发 select-then-insert 可能撞出重复记录）
+                        # 注：放在 if/else 之外，保证全新安装的库同样建上索引
+                    result = await conn.execute(text(
+                        "SELECT name FROM sqlite_master WHERE type='index' AND name='uq_user_session'"
+                    ))
+                    if result.scalar() is None:
+                        # 先清理可能已存在的重复行（保留 id 最大的那条）
+                        await conn.execute(text(
+                            "DELETE FROM favour_records WHERE id NOT IN ("
+                            "  SELECT MAX(id) FROM favour_records GROUP BY user_id, session_id"
+                            ")"
+                        ))
+                        await conn.execute(text(
+                            "CREATE UNIQUE INDEX uq_user_session ON favour_records(user_id, session_id)"
+                        ))
+                        logger.info("数据库升级完成（UNIQUE INDEX uq_user_session）。")
 
                     # 称号表（用户全局属性：当前选中的称号）
                     await conn.execute(text(
@@ -278,7 +297,7 @@ class FavourDBManager:
         is_unique: Optional[bool] = None,
         touch_interaction: bool = True  # 是否刷新最后互动时间
     ) -> bool:
-        """更新好感度记录"""
+        """更新好感度记录（并发安全：唯一索引 + IntegrityError 回退更新）"""
         await self.init_db()
         if not is_valid_userid(user_id):
             return False
@@ -306,6 +325,30 @@ class FavourDBManager:
                         last_interaction=now
                     )
                     session.add(record)
+                    try:
+                        await session.commit()
+                    except SAIntegrityError:
+                        # 并发插入冲突（两个请求同时判定“无记录”）：回滚后改走更新路径
+                        await session.rollback()
+                        result = await session.execute(
+                            select(FavourRecord).where(
+                                FavourRecord.user_id == user_id,
+                                FavourRecord.session_id == sid
+                            )
+                        )
+                        record = result.scalars().first()
+                        if record:
+                            if favour is not None:
+                                record.favour = max(self.min_val, min(self.max_val, favour))
+                            if relationship is not None:
+                                record.relationship = relationship
+                            if is_unique is not None:
+                                record.is_unique = is_unique
+                            record.updated_at = now
+                            if touch_interaction:
+                                record.last_interaction = now
+                            session.add(record)
+                            await session.commit()
                 else:
                     if favour is not None:
                         record.favour = max(self.min_val, min(self.max_val, favour))
@@ -317,8 +360,8 @@ class FavourDBManager:
                     if touch_interaction:
                         record.last_interaction = now
                     session.add(record)
+                    await session.commit()
                 
-                await session.commit()
                 return True
         except Exception as e:
             logger.error(f"更新数据库失败: {str(e)}")
@@ -661,7 +704,8 @@ class FavourDBManager:
         
         result = []
         for f in backup_dir.iterdir():
-            if f.is_file() and f.suffix == ".json":
+            # config_*.json 是配置文件备份（供配置损坏时自动恢复），不是记录快照，不在 WebUI 列出
+            if f.is_file() and f.suffix == ".json" and not f.name.startswith("config_"):
                 stat = f.stat()
                 # 从文件名解析时间戳，格式: prefix_YYYYMMDD_HHMMSS.json
                 created_iso = ""

@@ -1,5 +1,28 @@
 # 更新日志
 
+## v1.1.0 - 回合上游 v4.4.3 / v4.4.4 / v4.4.6 / v4.4.7 修复 (2026-10-12)
+
+从上游 nuomicici/astrbot_plugin_Favour_Ultra 回合 4 个健壮性与 Prompt 修复（上游领先本仓库基线 35 个提交，其中主动搭话相关修复因本版已移除搭话子系统而未回合）。
+
+### 修复
+- **配置原子写**（上游 v4.4.3）：`config.json` 改为「写临时文件 + `os.replace` 原子替换」，写入中途进程被杀不再产生截断的非法 JSON；此前一旦损坏，下次加载会直接回落到默认配置，导致 WebUI 配置整体清空
+- **配置损坏自动恢复**（上游 v4.4.3）：加载到损坏配置时先备份为 `config.json.corrupt_backup`，再尝试从 `backups/config_*.json` 恢复最近一份；`config.json` 丢失时也优先从备份恢复而非直接套用默认值
+- **配置随数据库一起自动备份**（上游 v4.4.3）：自动备份调度器顺带把 `config.json` 复制为 `backups/config_<时间戳>.json`，供配置损坏时恢复；这类文件不在 WebUI「备份」列表中展示，避免误当作记录快照恢复
+- **WebUI 动态项丢数据**（上游 v4.4.3）：添加/删除好感度分级、衰减规则、列表项，以及切换衰减模式、切换 Tab 之前，先 `collect()` 收集当前输入框（含未失焦）回写内存再重渲染
+- **重复记录与并发写**（上游 v4.4.6）：`favour_records` 新增 `UNIQUE INDEX(user_id, session_id)`，初始化时自动清理已有重复行（保留最新）；`update_favour` 增加 `IntegrityError` 并发安全回退（并发插入冲突时回滚改走更新）。本版恒为全局模式，多用户写入同一 `global` 池竞争更集中，此项尤其重要
+- **新版依赖 datetime 报错**（上游 v4.4.7）：`FavourRecord` 的 `created_at` / `updated_at` / `last_interaction` 改用 `sa_column=Column(DateTime)` 声明，绕过 Pydantic v2 对 naive datetime 的校验拒绝（`UserTitleGrant.granted_at` 同步处理）
+- **唯一索引覆盖全新安装**：上游的索引创建位于「表已存在」分支内，全新安装的库不会建索引；本版将其移出分支，新装与升级都会创建
+
+### 变更
+- **Prompt 重构**（上游 v4.4.4）：静态系统指令瘦身约一半（`static_prompt` 104 行 → 45 行），Token 占用降低，缓解对主 Persona 人设的注意力稀释
+- **注入顺序反转**：改为 `system_prompt = 原人设 + "\n\n" + 静态规则`，人设在前、机制在后
+- **标签位置改回最后一行**：此前本地版本要求标签在回复**第一行**、与「末尾追加变动显示行」的设计冲突且提示词自相矛盾，现统一为「每轮回复**最后一行**必须且只能是好感度日志标签」
+- **`<MandatoryFooter>` 近因强化**：在动态上下文 `<FavourContext>` 末尾追加尾部约束，降低长对话漏标
+- **`<ScoringMode>` 作用域隔离**：判定模式包进独立标签，避免评分规则干扰人设语气
+- 动态上下文由多行 XML 改为紧凑单行字段，标签名统一为 `<FavourContext>`
+
+---
+
 ## v1.0.0 - Favour Lite (2026-10-11)
 
 本仓库自本版本起更名为 **astrbot_plugin_Favour_Lite**，作为独立衍生版维护（基于上游 v4.3.0，Apache-2.0，原项目：https://github.com/nuomicici/astrbot_plugin_Favour_Ultra ）。
