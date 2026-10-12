@@ -21,6 +21,7 @@ from .permissions import PermLevel, PermissionManager
 from .storage import FavourDBManager, FavourRecord
 from .config_manager import PluginConfigManager
 from . import favour_card
+from . import favour_avatar
 
 PLUGIN_NAME = "astrbot_plugin_Favour_Lite"
 
@@ -929,6 +930,10 @@ class FavourManagerTool(Star):
                 })
 
             favs = [r.favour for r in all_records] or [0]
+            # 批量拉头像（QQ 号才拉得动），拉不到自动回退昵称首字
+            avatars = await favour_avatar.fetch_many([u["uid"] for u in users], 100)
+            for u in users:
+                u["avatar"] = avatars.get(u["uid"])
             payload = {
                 "title": title,
                 "subtitle": "每一点好感，都是一份心意",
@@ -997,6 +1002,12 @@ class FavourManagerTool(Star):
                 "max_favour": self.max_favour_value,
                 "footer": "好感度插件 · Favour Lite",
             }
+            # 头像拉取单独兜底：拉不到就画昵称首字，不能因此丢掉整张面板
+            try:
+                payload["avatar"] = await favour_avatar.fetch_avatar(uid, 640)
+            except Exception as e:
+                logger.debug(f"拉取头像失败 uid={uid}: {e}")
+                payload["avatar"] = None
             out_path = (self.data_dir / "cards" /
                         f"profile_{int(datetime.now().timestamp())}.png")
             return await asyncio.to_thread(

@@ -335,8 +335,39 @@ def _draw_rank_badge(d, cx, cy, r, idx, fonts):
     d.text((cx - tw / 2, cy - f.size * 0.55), txt, font=f, fill=(255, 255, 255, 255))
 
 
-def _draw_avatar(d, cx, cy, r, name, fonts):
-    """名号圆：首字代替头像（小蛋糕无头像时的同款观感）。"""
+def _paste_circle(canvas, img_src, cx, cy, size):
+    """把头像贴成圆形并居中裁切，失败返回 False（调用方回退首字）。"""
+    try:
+        av = img_src.convert('RGBA')
+        # 按不透明区域的短边居中裁切，避免把头顶切掉
+        box = av.getbbox()
+        if not box:
+            # 全透明 / 纯黑：没有可用像素，回退首字，别画出一个黑圆
+            return False
+        vw, vh = box[2] - box[0], box[3] - box[1]
+        side = min(vw, vh)
+        if side > 0:
+            cx0 = box[0] + (vw - side) // 2
+            cy0 = box[1] + (vh - side) // 2
+            av = av.crop((cx0, cy0, cx0 + side, cy0 + side))
+        av = av.resize((size, size), Image.Resampling.LANCZOS)
+        mask = Image.new('L', (size, size), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, size - 1, size - 1), fill=255)
+        av.putalpha(mask)
+        canvas.alpha_composite(av, (int(cx - size / 2), int(cy - size / 2)))
+        return True
+    except Exception:
+        return False
+
+
+def _draw_avatar(img, d, cx, cy, r, name, fonts, avatar=None):
+    """名号圆：有头像贴真头像，拉不到才用昵称首字占位。"""
+    size = r * 2
+    if avatar is not None and _paste_circle(img, avatar, cx, cy, size):
+        d = ImageDraw.Draw(img)
+        d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=AVATAR_RING,
+                  width=max(s(1.5), 2))
+        return
     d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=AVATAR_FILL,
               outline=AVATAR_RING, width=max(s(1.5), 2))
     ch = (name or "?")[0]
@@ -486,7 +517,8 @@ def render_favour_card(payload: dict, out_path, fonts: Fonts) -> Path:
         _draw_rank_badge(d, x0 + s(17), int(cy), s(11), i, fonts)
         # 名号圆
         raw_name = str(u.get("name") or "").strip()
-        _draw_avatar(d, x0 + s(52), int(cy), s(14), raw_name or "未命名", fonts)
+        _draw_avatar(img, d, x0 + s(52), int(cy), s(14),
+                     raw_name or "未命名", fonts, avatar=u.get("avatar"))
 
         tx = x0 + s(76)
         # 空昵称不拿 uid 顶替，否则 uid 会在主副两行重复出现
@@ -619,26 +651,33 @@ def _pbox(img, box, radius, fill, border=None):
     img.alpha_composite(layer)
 
 
-def _pavatar(img, cx, cy, size, fallback_char, font):
-    """粉彩环形头像：外圈深粉 + 内圈浅粉，首字占位。"""
+def _pavatar(img, cx, cy, size, fallback_char, font, avatar=None):
+    """粉彩环形头像：有头像贴真头像，拉不到才用昵称首字占位。
+
+    双圈环（外圈深粉 + 内圈浅粉）照常画在头像上层，压住圆形裁切边缘。
+    """
     d = ImageDraw.Draw(img)
     r = size // 2
+    inner = size - s(10)
+    if avatar is not None and _paste_circle(img, avatar, cx, cy, inner):
+        d = ImageDraw.Draw(img)
+    else:
+        av = Image.new('RGBA', (inner, inner), (255, 238, 245, 255))
+        ad = ImageDraw.Draw(av)
+        ch = (fallback_char or '?').strip()[:1] or '?'
+        bb = ad.textbbox((0, 0), ch, font=font)
+        ad.text(((inner - (bb[2] - bb[0])) / 2 - bb[0],
+                 (inner - (bb[3] - bb[1])) / 2 - bb[1]),
+                ch, font=font, fill=P_ACCENT + (255,))
+        mask = Image.new('L', av.size, 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, inner - 1, inner - 1), fill=255)
+        av.putalpha(mask)
+        img.alpha_composite(av, (int(cx - inner / 2), int(cy - inner / 2)))
+        d = ImageDraw.Draw(img)
     d.ellipse([cx - r, cy - r, cx + r, cy + r],
               outline=P_ACCENT + (255,), width=max(s(2), 3))
     d.ellipse([cx - r + s(5), cy - r + s(5), cx + r - s(5), cy + r - s(5)],
               outline=(255, 190, 212, 255), width=max(s(1.5), 2))
-    inner = size - s(10)
-    av = Image.new('RGBA', (inner, inner), (255, 238, 245, 255))
-    ad = ImageDraw.Draw(av)
-    ch = (fallback_char or '?').strip()[:1] or '?'
-    bb = ad.textbbox((0, 0), ch, font=font)
-    ad.text(((inner - (bb[2] - bb[0])) / 2 - bb[0],
-             (inner - (bb[3] - bb[1])) / 2 - bb[1]),
-            ch, font=font, fill=P_ACCENT + (255,))
-    mask = Image.new('L', av.size, 0)
-    ImageDraw.Draw(mask).ellipse((0, 0, inner - 1, inner - 1), fill=255)
-    av.putalpha(mask)
-    img.alpha_composite(av, (int(cx - inner / 2), int(cy - inner / 2)))
 
 
 def render_profile_card(payload: dict, out_path, fonts: Fonts) -> Path:
@@ -700,7 +739,8 @@ def render_profile_card(payload: dict, out_path, fonts: Fonts) -> Path:
     # ---- main：环形头像 + 信息栏
     y = margin + s(_P_HDR + 12)
     av_r = s(52)
-    _pavatar(img, ix + av_r, y + av_r, av_r * 2, name[:1], fonts.get(50, bold=True))
+    _pavatar(img, ix + av_r, y + av_r, av_r * 2, name[:1],
+             fonts.get(50, bold=True), avatar=payload.get("avatar"))
     d = ImageDraw.Draw(img)
 
     tx = ix + av_r * 2 + s(20)
