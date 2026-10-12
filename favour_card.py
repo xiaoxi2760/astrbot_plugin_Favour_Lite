@@ -11,6 +11,9 @@
    的「达妮娅观察记录」个人卡）：渐变页眉横幅 + 环形头像 + RANK 徽章 + 数值大字 +
    引文框 + 三联统计 + 两格详情 + 外框圆角裁切。
 
+3. `render_help_card` —— 命令帮助卡，同一套粉彩玻璃皮肤：页眉横幅 + 分组标题 +
+   指令条目（指令名 + 参数 + 说明 + 示例胶囊）。高度随条目数增长。
+
 denia_core 里依赖其自有数据的区块（观察余额 / 自然恢复上限 / 7 次变化柱状图 /
 LLM 评价 / 最近变化原因）本插件没有对应数据，一律不画、不留空位。
 
@@ -25,7 +28,7 @@ LLM 评价 / 最近变化原因）本插件没有对应数据，一律不画、�
 个人面板 payload：
     name          昵称
     uid           用户 ID（备用，昵称为空时顶上）
-    rank          当前排名（字符串，无排名时 "-")
+    rank          当前排名（字符串，无排名时 "-"）
     total_users   全库记录数
     score         好感度
     title         称号
@@ -36,6 +39,14 @@ LLM 评价 / 最近变化原因）本插件没有对应数据，一律不画、�
     created_at    首次记录时间字符串
     min_favour / max_favour  好感度上下限（水位条基准）
     footer        页脚文案
+    avatar        可选，PIL.Image；缺省画昵称首字
+
+帮助卡 payload：
+    title        主标题
+    subtitle     英文小标题（带字距）
+    groups       [{"name": 分组标题,
+                   "items": [{"cmd", "args", "desc", "example"}, ...]}, ...]
+    footer       页脚文案
 
 本模块不 import astrbot、不碰数据库 —— 纯函数：payload 进，PNG 文件出。
 """
@@ -875,6 +886,151 @@ def render_profile_card(payload: dict, out_path, fonts: Fonts) -> str:
     f_ft = fonts.get(9)
     d.text((cx - d.textlength(footer, font=f_ft) / 2,
             HH - margin - s(_P_PAD) - s(18)), footer,
+           font=f_ft, fill=SUBTITLE_C + (255,))
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    img.convert('RGB').save(out_path, 'PNG')
+    # 同上：返回 str，调用方要直接喂给 event.image_result
+    return str(out_path)
+
+
+# ---------------------------------------------------------------- 帮助卡
+_H_W = 560                 # 帮助卡画布宽（CSS px）
+_H_MARGIN = 18             # 画布外留白
+_H_PAD = 26                # 卡片左右内边距
+_H_HDR = 76                # 页眉横幅高
+_H_TOP = 6                 # 页眉横幅 -> 正文起点的间距
+_H_GRP = 34                # 分组标题 + 分隔线占用高
+_H_ROW1 = 19               # 单条指令首行高
+_H_LINE = 15               # 说明文字行高
+_H_EX = 25                 # 示例胶囊占用高
+_H_GAP = 12                # 条目间距
+_H_FOOT_GAP = 22           # 正文结束 -> 页脚的固定留白
+_H_FOOT_H = 14             # 页脚文字区高
+
+
+def _spaced_center(d, text, font, fill, spacing, cx, y, max_w):
+    """带字距文本居中绘制，超宽逐字裁剪（字距宽度另算，_ellipsis 用不了）。"""
+    text = str(text or '')
+    if _asw(d, text, font, spacing) > max_w:
+        ell = '…'
+        ew = d.textlength(ell, font=font) + s(spacing)
+        out = ''
+        for ch in text:
+            if _asw(d, out + ch, font, spacing) + ew > max_w:
+                break
+            out += ch
+        text = (out or text[:1]) + ell
+    _aspaced(d, (cx - _asw(d, text, font, spacing) / 2, y), text,
+             font, fill, spacing)
+
+
+def render_help_card(payload: dict, out_path, fonts: Fonts) -> str:
+    """命令帮助卡。payload 字段见模块 docstring。
+
+    与个人面板同一套粉彩玻璃皮肤；高度随条目数增长，最长的是管理员命令。
+    """
+    title = str(payload.get('title') or '').strip() or '好感度命令菜单'
+    subtitle = str(payload.get('subtitle') or '').strip() or 'COMMAND MENU'
+    footer = str(payload.get('footer') or '').strip() or '好感度插件 · Favour Lite'
+    groups = payload.get('groups') or []
+
+    # ---- 先量高度（条目数、说明折行数都会变）
+    probe = ImageDraw.Draw(Image.new('RGBA', (8, 8)))
+    f_cmd = fonts.get(12.5, bold=True)
+    f_args = fonts.get(10.5)
+    f_desc = fonts.get(9.5)
+    # 折行探针宽度必须等于真正绘制时文字可用的宽度，否则算少一行会顶穿胶囊
+    text_w = s(_H_W - 2 * (_H_MARGIN + _H_PAD) - 16)
+    plan, body_h = [], 0
+    for g in groups:
+        rows = []
+        for it in g.get('items') or []:
+            cmd = str(it.get('cmd') or '').strip()
+            args = str(it.get('args') or '').strip()
+            desc = str(it.get('desc') or '').strip()
+            ex = str(it.get('example') or '').strip()
+            lines = _awrap(probe, desc, f_desc, text_w)[:2] if desc else []
+            rows.append({
+                'cmd': cmd, 'args': args, 'lines': lines, 'ex': ex,
+                'h': _H_ROW1 + len(lines) * _H_LINE + (_H_EX if ex else 0) + _H_GAP,
+            })
+        gh = _H_GRP + sum(r['h'] for r in rows)
+        plan.append({'name': str(g.get('name') or '').strip(), 'rows': rows, 'h': gh})
+        body_h += gh
+
+    # 页脚按「正文结束位置 + 固定留白」定位，不要从画布底边倒算：
+    # 倒算会因为正文高度变化而让页脚紧贴最后一行。
+    H = _H_MARGIN * 2 + _H_HDR + _H_TOP + body_h + _H_FOOT_GAP + _H_FOOT_H + _H_PAD
+
+    W, HH = s(_H_W), s(H)
+    margin = s(_H_MARGIN)
+    card_box = [margin, margin, W - margin, HH - margin]
+    img = scene(W, HH, card_box)
+    img = Image.alpha_composite(
+        img, top_wash(W, HH, card_box, s(26), (255, 205, 226), s(_H_HDR + 22)))
+    d = ImageDraw.Draw(img)
+
+    ix = margin + s(_H_PAD)
+    iw = W - ix * 2
+    cx = W // 2
+
+    # ---- 页眉横幅
+    f_hdr = fonts.get(19, bold=True)
+    title = _ellipsis(d, title, f_hdr, iw)
+    d.text((cx - d.textlength(title, font=f_hdr) / 2, margin + s(12)),
+           title, font=f_hdr, fill=TITLE_C + (255,))
+    _spaced_center(d, subtitle, fonts.get(9.5), ACCENT_TEXT + (200,), 3,
+                   cx, margin + s(40), iw)
+
+    # ---- 分组 + 条目
+    y = margin + s(_H_HDR + _H_TOP)
+    for blk in plan:
+        d.line([(ix, y), (W - ix, y)], fill=ROW_SEP, width=1)
+        y += s(13)
+        d.rounded_rectangle((ix, y, ix + s(4), y + s(12)), radius=s(3),
+                            fill=ACCENT + (255,))
+        _aspaced(d, (ix + s(11), y - s(1)),
+                 _ellipsis(d, blk['name'], fonts.get(10, bold=True), iw - s(11)),
+                 fonts.get(10, bold=True), TITLE_C + (255,), 2)
+        y += s(_H_GRP - 13)
+
+        for r in blk['rows']:
+            tx = ix + s(16)
+            d.rounded_rectangle((ix, y + s(6), ix + s(4), y + s(15)), radius=s(2),
+                                fill=(255, 186, 210, 255))
+            cmd = _ellipsis(d, r['cmd'], f_cmd, iw - s(16))
+            tw = d.textlength(cmd, font=f_cmd)
+            d.text((tx, y), cmd, font=f_cmd, fill=TITLE_C + (255,))
+            if r['args']:
+                room = iw - s(16) - tw - s(6)
+                d.text((tx + tw + s(6), y + s(3)),
+                       _ellipsis(d, r['args'], f_args, max(room, s(20))),
+                       font=f_args, fill=MUTED_C + (255,))
+
+            ty = y + s(_H_ROW1)
+            for ln in r['lines']:
+                d.text((tx, ty), ln, font=f_desc, fill=BODY_C + (215,))
+                ty += s(_H_LINE)
+
+            if r['ex']:
+                f_ex = fonts.get(9.5, bold=True)
+                ex = _ellipsis(d, r['ex'], f_ex, iw - s(16) - s(22))
+                ew = int(d.textlength(ex, font=f_ex) + s(20))
+                _pbox(img, (tx, ty, tx + ew, ty + s(19)), s(999),
+                      PILL_BG, PILL_BORDER)
+                d = ImageDraw.Draw(img)
+                d.text((tx + s(10), ty + s(4)), ex, font=f_ex,
+                       fill=ACCENT_TEXT + (255,))
+
+            y += s(r['h'])
+
+    # ---- 页脚（正文结束 + 固定留白，与 H 的算法保持同一套）
+    f_ft = fonts.get(9)
+    ft = _ellipsis(d, footer, f_ft, iw)
+    d.text((cx - d.textlength(ft, font=f_ft) / 2,
+            margin + s(_H_HDR + _H_TOP + body_h + _H_FOOT_GAP)), ft,
            font=f_ft, fill=SUBTITLE_C + (255,))
 
     out_path = Path(out_path)

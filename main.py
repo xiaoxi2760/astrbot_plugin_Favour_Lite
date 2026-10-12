@@ -1028,6 +1028,39 @@ class FavourManagerTool(Star):
             logger.error(f"渲染个人好感度面板失败，回退文本: {e}")
             return None
 
+    async def _render_help_card(self, kind: str, payload: dict) -> Optional[str]:
+        """渲染命令帮助卡。失败返回 None，由调用方回退纯文本。
+
+        帮助文案只在这里维护一份（groups），出图与纯文本回退共用，
+        免得改了图上的命令名、忘了改文字版。
+        """
+        if favour_card.Image is None:
+            return None
+        try:
+            out_path = (self.data_dir / "cards" /
+                        f"help_{kind}_{int(datetime.now().timestamp())}.png")
+            # 同上：渲染层保证 str，这里再兜一层，image_result 不接受 Path
+            return str(await asyncio.to_thread(
+                favour_card.render_help_card, payload, out_path, self._card_fonts()))
+        except Exception as e:
+            logger.error(f"渲染帮助卡片失败，回退文本: {e}")
+            return None
+
+    @staticmethod
+    def _help_text(title: str, groups: List[dict]) -> str:
+        """帮助卡内容的纯文本版本，用于渲染失败时回退。"""
+        lines = [title]
+        for g in groups:
+            lines.append("")
+            lines.append(f"[{g['name']}]")
+            for it in g["items"]:
+                lines.append(f"- {it['cmd']} {it['args']}".rstrip())
+                if it.get("desc"):
+                    lines.append(f"  {it['desc']}")
+                if it.get("example"):
+                    lines.append(f"  示例: {it['example']}")
+        return "\n".join(lines)
+
     def _build_favour_levels_prompt(self, current_favour: Optional[int] = None) -> str:
         """根据 favour_levels 配置构建好感度分级规则文本。
         
@@ -2141,61 +2174,109 @@ class FavourManagerTool(Star):
         """显示可用命令菜单"""
         is_superuser = await self._check_permission(event, PermLevel.SUPERUSER)
 
-        msg = ["⭐ 好感度插件命令菜单 ⭐"]
-
-        msg.append("\n[通用命令]")
-        msg.append("- 查询好感度 [@用户]")
-        msg.append("- 好感度排行 [页码]")
-        msg.append("- 称号")
-        msg.append("- 称号帮助")
-        msg.append("- 好感度指令帮助")
+        groups = [{
+            "name": "通用命令",
+            "items": [
+                {"cmd": "查询好感度", "args": "[@用户]",
+                 "desc": "查看自己或指定用户的好感度面板",
+                 "example": "/查询好感度 @糯米茨"},
+                {"cmd": "好感度排行", "args": "[页码]",
+                 "desc": "当前会话好感度榜，按数值倒序，可翻页",
+                 "example": "/好感度排行 2"},
+                {"cmd": "称号", "args": "",
+                 "desc": "查看自己已获得的称号"},
+                {"cmd": "称号帮助", "args": "",
+                 "desc": "称号相关指令用法"},
+                {"cmd": "好感度指令帮助", "args": "",
+                 "desc": "详细用法与示例"},
+            ],
+        }]
 
         if is_superuser:
-            msg.append("\n[Bot管理员命令]")
-            msg.append("- 修改好感度 @用户 <数值>")
-            msg.append("- 修改关系 @用户 <关系名> <1/0>")
-            msg.append("- 解除关系 @用户")
-            msg.append("- 清空好感度 @用户")
-            msg.append("- 好感度排行 [页码]")
-            msg.append("- 全局好感度排行 [页码]")
-            msg.append("- 全局修改好感度 @用户 <数值>")
-            msg.append("- 全局修改关系 @用户 <关系名> <1/0>")
-            msg.append("- 全局解除关系 @用户")
-            msg.append("- 清空全局好感度")
-            msg.append("- 取消冷暴力 [@用户]")
-            msg.append("- 查看冷暴力列表")
-            msg.append("- 分配称号 @用户 <EX称号>")
-            msg.append("- 移除称号 @用户 <EX称号>")
+            groups.append({
+                "name": "Bot 管理员命令",
+                "items": [
+                    {"cmd": "修改好感度", "args": "@用户 <数值>", "desc": ""},
+                    {"cmd": "修改关系", "args": "@用户 <关系名> <1/0>",
+                     "desc": "1 = 唯一关系（恋人），0 = 不唯一（朋友）",
+                     "example": "/修改关系 @糯米茨 挚友 0"},
+                    {"cmd": "解除关系", "args": "@用户", "desc": ""},
+                    {"cmd": "清空好感度", "args": "@用户",
+                     "desc": "需二次确认，并自动备份数据"},
+                    {"cmd": "好感度排行", "args": "[页码]", "desc": ""},
+                    {"cmd": "全局好感度排行", "args": "[页码]", "desc": ""},
+                    {"cmd": "全局修改好感度", "args": "@用户 <数值>", "desc": ""},
+                    {"cmd": "全局修改关系", "args": "@用户 <关系名> <1/0>", "desc": ""},
+                    {"cmd": "全局解除关系", "args": "@用户", "desc": ""},
+                    {"cmd": "清空全局好感度", "args": "",
+                     "desc": "需二次确认，并自动备份数据"},
+                    {"cmd": "取消冷暴力", "args": "[@用户]", "desc": ""},
+                    {"cmd": "查看冷暴力列表", "args": "", "desc": ""},
+                    {"cmd": "分配称号", "args": "@用户 <EX称号>", "desc": ""},
+                    {"cmd": "移除称号", "args": "@用户 <EX称号>", "desc": ""},
+                ],
+            })
 
-        yield event.plain_result("\n".join(msg))
+        payload = {
+            "title": "好感度插件命令菜单",
+            "subtitle": "COMMAND MENU",
+            "groups": groups,
+            "footer": "好感度插件 · Favour Lite",
+        }
+        # 优先出卡片图；失败再回退纯文本
+        img_path = await self._render_help_card("menu", payload)
+        if img_path:
+            yield event.image_result(img_path)
+            return
+
+        yield event.plain_result(
+            self._help_text("⭐ 好感度插件命令菜单 ⭐", groups))
 
     @filter.command("好感度指令帮助")
     async def help_usage(self, event: AstrMessageEvent):
         """显示详细指令用法"""
-        msg = f"""⭐ 好感度指令用法示例 ⭐
+        groups = [
+            {"name": "1 · 查询与排行", "items": [
+                {"cmd": "查询好感度", "args": "[@用户]",
+                 "desc": "不带参数查自己，带 @ 查别人；结果为面板卡",
+                 "example": "/查询好感度 @糯米茨"},
+                {"cmd": "好感度排行", "args": "[页码]",
+                 "desc": "当前会话好感度榜，固定按数值倒序",
+                 "example": "/好感度排行 2"},
+            ]},
+            {"name": "2 · 修改好感度（Bot管理员）", "items": [
+                {"cmd": "修改好感度", "args": "@用户 <数值>",
+                 "desc": "调整指定用户在当前会话的好感度",
+                 "example": "/修改好感度 @糯米茨 60"},
+            ]},
+            {"name": "3 · 修改关系（Bot管理员）", "items": [
+                {"cmd": "修改关系", "args": "@用户 <关系名> <1/0>",
+                 "desc": "1 代表唯一关系（如恋人），0 代表不唯一（如朋友）",
+                 "example": "/修改关系 @糯米茨 挚友 0"},
+            ]},
+            {"name": "4 · 清空操作（Bot管理员）", "items": [
+                {"cmd": "清空好感度", "args": "@用户", "desc": ""},
+                {"cmd": "清空全局好感度", "args": "",
+                 "desc": "清空操作需要二次确认，并会自动备份数据"},
+            ]},
+            {"name": "5 · 全局操作（Bot管理员）", "items": [
+                {"cmd": "全局修改好感度", "args": "@用户 <数值>",
+                 "desc": "当前为全局模式，直接作用于用户的好感度数据",
+                 "example": "/全局修改好感度 @糯米茨 100"},
+            ]},
+        ]
 
-1. 查询好感度
-   用法: /查询好感度 [@用户]
-   示例: /查询好感度 @糯米茨
-   用法: /好感度排行 [页码]
-   示例: /好感度排行 2
+        payload = {
+            "title": "好感度指令用法示例",
+            "subtitle": "USAGE GUIDE",
+            "groups": groups,
+            "footer": "好感度插件 · Favour Lite",
+        }
+        # 优先出卡片图；失败再回退纯文本
+        img_path = await self._render_help_card("usage", payload)
+        if img_path:
+            yield event.image_result(img_path)
+            return
 
-2. 修改好感度 (Bot管理员)
-   用法: /修改好感度 @用户 <数值>
-   示例: /修改好感度 @糯米茨 60
-
-3. 修改关系 (Bot管理员)
-   用法: /修改关系 @用户 <关系名> <1/0>
-   说明: 1代表唯一关系(如恋人)，0代表不唯一(如朋友)
-   示例: /修改关系 @糯米茨 挚友 0
-
-4. 清空操作 (Bot管理员)
-   用法: /清空好感度 @用户
-   用法: /清空全局好感度
-   说明: 清空操作需要二次确认，并会自动备份数据。
-
-5. 全局操作 (Bot管理员)
-   示例: /全局修改好感度 @糯米茨 100
-   说明: 当前为全局模式，该操作直接作用于用户的好感度数据。
-"""
-        yield event.plain_result(msg)
+        yield event.plain_result(
+            self._help_text("⭐ 好感度指令用法示例 ⭐", groups))
