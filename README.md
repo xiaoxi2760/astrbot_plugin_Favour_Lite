@@ -4,7 +4,7 @@
 
 [![上游项目](https://img.shields.io/badge/基于_Favour_Ultra_v4.3.0-ff69b4?style=for-the-badge)](https://github.com/nuomicici/astrbot_plugin_Favour_Ultra)
 [![许可证](https://img.shields.io/badge/License-Apache--2.0-blue?style=for-the-badge)](LICENSE)
-[![当前版本](https://img.shields.io/badge/当前版本v1.1.0-blue?style=for-the-badge)](#更新日志)
+[![当前版本](https://img.shields.io/badge/当前版本v1.2.0-blue?style=for-the-badge)](#更新日志)
 
 </div>
 
@@ -21,8 +21,9 @@
 - **移除会话隔离体系**：会话迁移/同步等功能删除；`_conf_schema.json` 不再提供，全部配置走 WebUI。
 - **新增**：LLM 对话结束后在最后一行显示好感度变动（`❤️/🖤：好感度±X  总好感：Y`），并抽成 `favour_change_line()` 供其他插件（如 [astrbot_plugin_cake_denia](https://github.com/xiaoxi2760/astrbot_plugin_cake_denia)）复用。
 - **回合上游修复**（v1.1.0）：配置原子写与损坏自动恢复、配置纳入自动备份、WebUI 动态项先收集再重渲染、`UNIQUE INDEX` + 并发安全写入、Pydantic v2 datetime 兼容、Prompt 瘦身与注入顺序反转（人设在前）。
+- **卡片出图**（v1.2.0）：`查询好感度` / `好感度排行` / `好感度帮助` 三条指令改为粉彩玻璃卡片（纯 PIL 本地渲染，不依赖 Chrome），支持真实 QQ 头像；排行榜支持 `倒序` 看谁垫底；新增管理员 `禁言` / `解除禁言`。
 
-四轮改动的详细记录（含删改清单与本地提交号）见 [精简修改说明.md](精简修改说明.md)。
+四轮改动与卡片化的详细记录（含删改清单与本地提交号）见 [精简修改说明.md](精简修改说明.md)。
 
 ---
 

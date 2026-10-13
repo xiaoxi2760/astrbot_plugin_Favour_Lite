@@ -1,7 +1,7 @@
 name: astrbot_plugin_Favour_Lite
 display_name: 精简好感度系统（Favour Lite）
 author: "xiaoxi2760"
-version: v1.1.0
+version: v1.2.0
 description: "基于糯米茨 astrbot_plugin_Favour_Ultra v4.3.0（Apache-2.0）精简修改的衍生版：好感度固定纯全局（同一用户跨群/跨平台共享），移除主动搭话与会话隔离体系；保留好感度增改查、关系、冷暴力、称号、WebUI 面板与自动备份，LLM 对话末尾显示好感度变动。原插件功能更完整，需要主动搭话等能力请安装原版。"
 repo: https://github.com/xiaoxi2760/astrbot_plugin_Favour_Lite/
 astrbot_version: ">=4.24"
