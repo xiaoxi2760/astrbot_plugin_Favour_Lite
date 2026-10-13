@@ -809,8 +809,18 @@ class FavourManagerTool(Star):
             display[uid] = selected.get(uid) or cake.get(uid) or "-"
         return display
 
+    def _is_bot_admin(self, user_id) -> bool:
+        """是否在 admins_id 里。
+
+        配置里这一项没有 schema 约束，只能手改 JSON，写成数字（12345）
+        而不是字符串（"12345"）的概率不低。直接 `str(x) in admins_id` 的话
+        数字永远匹配不上，Bot 管理员会被静默降级成普通成员 —— 所有
+        SUPERUSER 指令一起失效，而且没有任何报错。两侧都归一成 str 再比。
+        """
+        return str(user_id) in {str(a) for a in (self.admins_id or [])}
+
     async def _check_permission(self, event: AstrMessageEvent, required_level: int) -> bool:
-        if str(event.get_sender_id()) in self.admins_id:
+        if self._is_bot_admin(event.get_sender_id()):
             return True
         # 延迟导入：避免非 aiocqhttp 平台因硬导入而崩溃
         #################
@@ -899,14 +909,27 @@ class FavourManagerTool(Star):
             self._card_fonts_instance = favour_card.Fonts(None)
         return self._card_fonts_instance
 
+    @staticmethod
+    def _rank_footer(note: str, page: int, total_pages: int,
+                     total: int, page_cmd: str) -> str:
+        """排行榜卡片页脚：note（升序榜的「倒数名次」等）+ 翻页提示。"""
+        head = f"{note} · " if note else ""
+        if total_pages > 1:
+            return f"{head}第 {page}/{total_pages} 页 · 发送「{page_cmd} {page + 1}」翻页"
+        return f"{head}共 {total} 条记录"
+
     async def _render_favour_card(self, event, page_records: List[FavourRecord],
+
                                   all_records: List[FavourRecord],
                                   title_map: Dict[str, str], title: str,
                                   scope: str, page: int, total_pages: int,
-                                  page_cmd: str) -> Optional[str]:
+                                  page_cmd: str, note: str = "",
+                                  slug: str = "", muted_rank: bool = False,
+                                  page_offset: int = 0) -> Optional[str]:
         """渲染好感度榜单卡片，返回图片路径。
 
         统计口径用 all_records（整页所有记录），列表只画当前页。
+        note 是页脚前缀说明（升序榜用「倒数名次」澄清徽章含义）。
         PIL 不可用或渲染失败一律返回 None，由调用方回退到 markdown 表格。
         """
         if favour_card.Image is None:
@@ -920,7 +943,9 @@ class FavourManagerTool(Star):
                 except Exception:
                     name = r.username or uid
                 users.append({
-                    "rank": i + 1,
+                    # 全局名次而不是页内下标：翻到第 2 页若还从 1 开始，
+                    # 徽章会和页脚的「倒数名次」对不上
+                    "rank": page_offset + i + 1,
                     "name": name or uid,
                     "uid": uid,
                     "favour": r.favour,
@@ -949,14 +974,15 @@ class FavourManagerTool(Star):
                     "min": min(favs),
                 },
                 "users": users,
-                "footer": (f"第 {page}/{total_pages} 页 · 发送「{page_cmd} {page + 1}」翻页"
-                           if total_pages > 1 else f"共 {len(all_records)} 条记录"),
+                "muted_rank": muted_rank,
+                "footer": self._rank_footer(note, page, total_pages,
+                                            len(all_records), page_cmd),
             }
 
-            # 文件名保持纯 ASCII：部分图床/URL 对中文名编码不稳
-            slug = "session" if scope == "当前会话" else "global"
+            # 文件名保持纯 ASCII：部分图床/URL 对中文名编码不稳。
+            # slug 由调用方给（scope 已带「· 从低到高」后缀，不能再拿它反推会话/全局）
             out_path = (self.data_dir / "cards" /
-                        f"favour_{slug}_{page}_{int(datetime.now().timestamp())}.png")
+                        f"favour_{slug or 'rank'}_{page}_{int(datetime.now().timestamp())}.png")
             # 渲染函数已保证返回 str；这里再 str() 一次是兜底，
             # 防止以后有人改动渲染层又把它变成 Path（image_result 只吃 str）
             return str(await asyncio.to_thread(
@@ -1265,7 +1291,7 @@ class FavourManagerTool(Star):
                 current_relationship = "无"
 
             # 获取 Admin Status
-            if str(user_id) in self.admins_id:
+            if self._is_bot_admin(user_id):
                 admin_status = "Bot管理员"
             elif await self._check_permission(event, PermLevel.OWNER):
                 admin_status = "群主"
@@ -1665,112 +1691,148 @@ class FavourManagerTool(Star):
         msg = f"🔍 用户：{name}\n🆔 ID：{target_uid}\n❤ 好感度：{fav}\n🍰 称号：{title_display}\n🔗 关系：{rel}{uniq}"
         yield event.plain_result(msg)
 
-    @filter.command("好感度排行", alias={'查询当前好感度', '查当前好感度', '查询本群好感度', '查本群好感度', '查群好感度', '查询群好感度', '当前好感度', '本群好感度', '群好感度'})
-    async def query_current_session_favour(self, event: AstrMessageEvent, page: int = 1):
-        """查询当前会话的所有好感度记录 (支持分页)"""
-        # 权限检查：批量查询仅管理员可用
-        #################
-        if not await self._check_query_permission(event):
-            yield event.plain_result("权限不足：批量查询仅管理员可用。")
-            return
-        #################
+    async def _favour_ranking(self, event: AstrMessageEvent, *, is_global: bool,
+                              descending: bool, page: int):
+        """会话 / 全局两个排行榜指令的共同实现。
 
-        session_id = self._get_session_id(event)
-        records = await self.db_manager.get_all_in_session(session_id)
-        
+        「排行」默认降序（谁最高）；带「倒序」时改成从低到高（谁垫底）。
+        两种口径只差排序方向，权限、数据来源、出图、回退全一致。
+        """
+        if is_global:
+            if not await self._check_permission(event, PermLevel.SUPERUSER):
+                yield event.plain_result("权限不足！仅Bot管理员可用。")
+                return
+            records = await self.db_manager.get_global_records()
+            scope, empty = "全局", "暂无全局好感度记录。"
+        else:
+            # 批量查询是否放行普通用户，走配置开关
+            if not await self._check_query_permission(event):
+                yield event.plain_result("权限不足：批量查询仅管理员可用。")
+                return
+            records = await self.db_manager.get_all_in_session(self._get_session_id(event))
+            scope, empty = "当前会话", "当前会话暂无好感度记录。"
+
         if not records:
-            yield event.plain_result("当前会话暂无好感度记录。")
+            yield event.plain_result(empty)
             return
 
-        # 「排行」按定义就是按好感度倒序，不再受 group_sort_by 影响；
-        # 同分时按 user_id 排，保证翻页顺序稳定不跳动。
-        records = sorted(records, key=lambda r: (-r.favour, str(r.user_id)))
-        
+        # 同分时按 user_id 排，保证翻页顺序稳定不跳动
+        records = sorted(records, key=lambda r: (
+            -r.favour if descending else r.favour, str(r.user_id)))
+
         page_size = 20
-        total_records = len(records)
-        total_pages = (total_records + page_size - 1) // page_size
-        if page < 1: page = 1
-        if page > total_pages and total_pages > 0: page = total_pages
-        
-        start_idx = (page - 1) * page_size
-        end_idx = start_idx + page_size
-        page_records = records[start_idx:end_idx]
+        total_pages = (len(records) + page_size - 1) // page_size
+        page = max(1, min(page, total_pages or 1))
+        page_records = records[(page - 1) * page_size: page * page_size]
 
         title_map = await self._get_title_display([r.user_id for r in page_records])
+
+        # 翻页提示必须带上排序词：少了它，用户照着页脚打「好感度排行 2」
+        # 会拿回降序的第 2 页，而卡片还挂着「倒数名次」，静默错到没察觉。
+        cmd = ("全局" if is_global else "") + "好感度排行"
+        if descending:
+            card_title, card_scope, note = f"{scope}好感度排行", scope, ""
+            slug = "global" if is_global else "session"
+        else:
+            # 徽章画的是名次，倒序时「1」是最垫底的：页脚说清楚是倒数名次，
+            # 徽章也换成中性色 —— 垫底那位戴金牌会让人以为那是荣誉
+            card_title = f"{scope}好感度排行"
+            card_scope, note = f"{scope} · 倒序（从低到高）", "倒数名次"
+            cmd += " 倒序"
+            slug = ("global_rev" if is_global else "session_rev")
 
         # 优先出卡片图；失败再回退 markdown 表格
         img_path = await self._render_favour_card(
             event, page_records, records, title_map,
-            title="当前会话好感度排行", scope="当前会话",
-            page=page, total_pages=total_pages, page_cmd="好感度排行")
+            title=card_title, scope=card_scope,
+            page=page, total_pages=total_pages, page_cmd=cmd,
+            note=note, slug=slug, muted_rank=not descending,
+            page_offset=(page - 1) * page_size)
         if img_path:
             yield event.image_result(img_path)
             return
 
-        headers = [
-            "| 用户昵称 | 用户ID | 好感度 | 关系 | 唯一 | 称号 |",
-            "| :--- | :--- | :---: | :---: | :---: | :--- |"
-        ]
+        headers = (["| 用户ID | 好感度 | 关系 | 唯一 | 称号 |",
+                    "| :--- | :---: | :---: | :---: | :--- |"] if is_global else
+                   ["| 用户昵称 | 用户ID | 好感度 | 关系 | 唯一 | 称号 |",
+                    "| :--- | :--- | :---: | :---: | :---: | :--- |"])
         rows = []
         for r in page_records:
-            name = self._escape_markdown(await self._get_user_display_name(event, r.user_id))
             rel = self._escape_markdown(r.relationship or "无")
             uniq = "是" if r.is_unique else "否"
             cake = title_map.get(str(r.user_id), "-")
-            rows.append(f"| {name} | {r.user_id} | {r.favour} | {rel} | {uniq} | {cake} |")
+            if is_global:
+                rows.append(f"| {r.user_id} | {r.favour} | {rel} | {uniq} | {cake} |")
+            else:
+                name = self._escape_markdown(
+                    await self._get_user_display_name(event, r.user_id))
+                rows.append(f"| {name} | {r.user_id} | {r.favour} | {rel} | {uniq} | {cake} |")
 
-        title = f"📊 当前会话好感度列表 (SID: {self._escape_markdown(session_id)}) - 第 {page}/{total_pages} 页"
+        label = f"{scope}好感度{'倒序列表' if not descending else '列表'}"
+        if is_global:
+            title = f"📊 {label} - 第 {page}/{total_pages} 页"
+        else:
+            sid = self._escape_markdown(self._get_session_id(event))
+            title = f"📊 {label} (SID: {sid}) - 第 {page}/{total_pages} 页"
         await self._send_chunked_t2i(event, title, headers, rows)
+
+    # 排序词 -> 是否降序。倒序 = 从低到高（看谁垫底），正序 = 从高到低（= 排行默认）。
+    _ORDER_WORDS = {
+        "倒序": False, "降序": False, "从低到高": False, "低到高": False, "asc": False,
+        "正序": True, "升序": True, "从高到低": True, "高到低": True, "desc": True,
+    }
+
+    @classmethod
+    def _parse_page_order(cls, first: str, second: str = "") -> tuple:
+        """把两个位置参数解析成 (页码, 是否降序, 认不出的词)。
+
+        页码声明成 str 是有意的：写成 int 的话 AstrBot 会先 int() 转换，
+        `/好感度排行 倒序` 直接抛「参数 page 类型错误」，排序词根本进不来。
+        这里自己认，两个顺序都收：
+            /好感度排行 2 倒序   /好感度排行 倒序   /好感度排行 倒序 2
+        """
+        parts = [str(first or "").strip(), str(second or "").strip()]
+        parts = [p for p in parts if p]
+        num = next((p for p in parts if p.isdigit()), None)
+        words = [p for p in parts if not p.isdigit()]
+        page = int(num) if num else 1
+        # 没写排序词就是默认降序（排行本来的样子）
+        descending = cls._ORDER_WORDS.get(words[0].lower(), True) if words else True
+        unknown = [w for w in words if w.lower() not in cls._ORDER_WORDS]
+        # 两个词方向相反时不能静默按第一个执行，那会让人以为页面乱了
+        if len(words) > 1 and not unknown:
+            if len({cls._ORDER_WORDS[w.lower()] for w in words}) > 1:
+                unknown = [f"{'、'.join(words)}（两个排序词方向相反）"]
+        return page, descending, unknown
+
+    def _order_hint(self, is_global: bool = False) -> str:
+        name = "全局好感度排行" if is_global else "好感度排行"
+        return f"用法：/{name} [页码] [倒序]，倒序=从低到高看谁垫底，正序=从高到低"
+
+    @filter.command("好感度排行", alias={'查询当前好感度', '查当前好感度', '查询本群好感度', '查本群好感度', '查群好感度', '查询群好感度', '当前好感度', '本群好感度', '群好感度'})
+    async def query_current_session_favour(self, event: AstrMessageEvent,
+                                           page: str = "1", order: str = ""):
+        """查询当前会话好感度排行 (支持分页；加「倒序」看谁垫底)"""
+        p, descending, unknown = self._parse_page_order(page, order)
+        if unknown:
+            yield event.plain_result(f"没看懂「{'、'.join(unknown)}」。{self._order_hint()}")
+            return
+        async for item in self._favour_ranking(event, is_global=False,
+                                               descending=descending, page=p):
+            yield item
 
     @filter.command("全局好感度排行", alias={'查询全局好感度', '全局好感度', '查全局好感度', '查看全局好感度', '全局好感度查询'})
-    async def query_global_favour(self, event: AstrMessageEvent, page: int = 1):
-        """查询全局模式下的好感度 (仅Bot管理员，支持分页)"""
-        if not await self._check_permission(event, PermLevel.SUPERUSER):
-            yield event.plain_result("权限不足！仅Bot管理员可用。")
+    async def query_global_favour(self, event: AstrMessageEvent,
+                                  page: str = "1", order: str = ""):
+        """查询全局好感度排行 (仅Bot管理员，支持分页；加「倒序」看谁垫底)"""
+        p, descending, unknown = self._parse_page_order(page, order)
+        if unknown:
+            yield event.plain_result(
+                f"没看懂「{'、'.join(unknown)}」。{self._order_hint(is_global=True)}")
             return
-            
-        records = await self.db_manager.get_global_records()
-        if not records:
-            yield event.plain_result("暂无全局好感度记录。")
-            return
-
-        # 同上：排行固定按好感度倒序，同分按 user_id 排
-        records = sorted(records, key=lambda r: (-r.favour, str(r.user_id)))
-        
-        page_size = 20
-        total_records = len(records)
-        total_pages = (total_records + page_size - 1) // page_size
-        if page < 1: page = 1
-        if page > total_pages and total_pages > 0: page = total_pages
-        
-        start_idx = (page - 1) * page_size
-        end_idx = start_idx + page_size
-        page_records = records[start_idx:end_idx]
-            
-        title_map = await self._get_title_display([r.user_id for r in page_records])
-
-        # 优先出卡片图；失败再回退 markdown 表格
-        img_path = await self._render_favour_card(
-            event, page_records, records, title_map,
-            title="全局好感度排行", scope="全局",
-            page=page, total_pages=total_pages, page_cmd="全局好感度排行")
-        if img_path:
-            yield event.image_result(img_path)
-            return
-
-        headers = [
-            "| 用户ID | 好感度 | 关系 | 唯一 | 称号 |",
-            "| :--- | :---: | :---: | :---: | :--- |"
-        ]
-        rows = []
-        for r in page_records:
-            rel = self._escape_markdown(r.relationship or "无")
-            uniq = "是" if r.is_unique else "否"
-            cake = title_map.get(str(r.user_id), "-")
-            rows.append(f"| {r.user_id} | {r.favour} | {rel} | {uniq} | {cake} |")
-            
-        title = f"📊 全局好感度记录 - 第 {page}/{total_pages} 页"
-        await self._send_chunked_t2i(event, title, headers, rows)
+        async for item in self._favour_ranking(event, is_global=True,
+                                               descending=descending, page=p):
+            yield item
 
     # ================= 2. 修改类型 =================
 
@@ -2173,6 +2235,10 @@ class FavourManagerTool(Star):
     async def help_menu(self, event: AstrMessageEvent):
         """显示可用命令菜单"""
         is_superuser = await self._check_permission(event, PermLevel.SUPERUSER)
+        # 群管理组（禁言）单独按群管权限门控：群管不是 Bot 管理员，
+        # 但确实能用到禁言。help_usage 里同一组也要按同一口径门控，
+        # 否则两个帮助入口对同一条命令的可见性会打架。
+        is_group_admin = await self._check_permission(event, PermLevel.ADMIN)
 
         groups = [{
             "name": "通用命令",
@@ -2180,9 +2246,9 @@ class FavourManagerTool(Star):
                 {"cmd": "查询好感度", "args": "[@用户]",
                  "desc": "查看自己或指定用户的好感度面板",
                  "example": "/查询好感度 @糯米茨"},
-                {"cmd": "好感度排行", "args": "[页码]",
-                 "desc": "当前会话好感度榜，按数值倒序，可翻页",
-                 "example": "/好感度排行 2"},
+                {"cmd": "好感度排行", "args": "[页码] [倒序]",
+                 "desc": "当前会话好感度榜，默认从高到低；加「倒序」从低到高看谁垫底",
+                 "example": "/好感度排行 2 倒序"},
                 {"cmd": "称号", "args": "",
                  "desc": "查看自己已获得的称号"},
                 {"cmd": "称号帮助", "args": "",
@@ -2203,8 +2269,8 @@ class FavourManagerTool(Star):
                     {"cmd": "解除关系", "args": "@用户", "desc": ""},
                     {"cmd": "清空好感度", "args": "@用户",
                      "desc": "需二次确认，并自动备份数据"},
-                    {"cmd": "好感度排行", "args": "[页码]", "desc": ""},
-                    {"cmd": "全局好感度排行", "args": "[页码]", "desc": ""},
+                    {"cmd": "好感度排行", "args": "[页码] [倒序]", "desc": ""},
+                    {"cmd": "全局好感度排行", "args": "[页码] [倒序]", "desc": ""},
                     {"cmd": "全局修改好感度", "args": "@用户 <数值>", "desc": ""},
                     {"cmd": "全局修改关系", "args": "@用户 <关系名> <1/0>", "desc": ""},
                     {"cmd": "全局解除关系", "args": "@用户", "desc": ""},
@@ -2214,6 +2280,17 @@ class FavourManagerTool(Star):
                     {"cmd": "查看冷暴力列表", "args": "", "desc": ""},
                     {"cmd": "分配称号", "args": "@用户 <EX称号>", "desc": ""},
                     {"cmd": "移除称号", "args": "@用户 <EX称号>", "desc": ""},
+                ],
+            })
+
+        if is_group_admin:
+            groups.append({
+                "name": "群管理命令（群管理员及以上）",
+                "items": [
+                    {"cmd": "禁言", "args": "@用户 <时长>",
+                     "desc": "裸数字按分钟，也认 30s / 10m / 2h / 1d",
+                     "example": "/禁言 @糯米茨 10m"},
+                    {"cmd": "解除禁言", "args": "@用户", "desc": "解禁 / 取消禁言"},
                 ],
             })
 
@@ -2240,9 +2317,10 @@ class FavourManagerTool(Star):
                 {"cmd": "查询好感度", "args": "[@用户]",
                  "desc": "不带参数查自己，带 @ 查别人；结果为面板卡",
                  "example": "/查询好感度 @糯米茨"},
-                {"cmd": "好感度排行", "args": "[页码]",
-                 "desc": "当前会话好感度榜，固定按数值倒序",
-                 "example": "/好感度排行 2"},
+                {"cmd": "好感度排行", "args": "[页码] [倒序]",
+                 "desc": "当前会话好感度榜，默认从高到低；「倒序」=从低到高，"
+                         "徽章为倒数名次",
+                 "example": "/好感度排行 倒序"},
             ]},
             {"name": "2 · 修改好感度（Bot管理员）", "items": [
                 {"cmd": "修改好感度", "args": "@用户 <数值>",
@@ -2266,6 +2344,18 @@ class FavourManagerTool(Star):
             ]},
         ]
 
+        # 群管理组按群管权限门控，和 help_menu 同一口径
+        if await self._check_permission(event, PermLevel.ADMIN):
+            groups.append({
+                "name": "6 · 群管理（群管理员及以上）", "items": [
+                    {"cmd": "禁言", "args": "@用户 <时长>",
+                     "desc": "裸数字按分钟，也认 30s / 10m / 2h / 1d，上限 30 天；"
+                             "不能禁言自己、机器人和等级不低于自己的人",
+                     "example": "/禁言 @糯米茨 10m"},
+                    {"cmd": "解除禁言", "args": "@用户", "desc": "解禁 / 取消禁言"},
+                ],
+            })
+
         payload = {
             "title": "好感度指令用法示例",
             "subtitle": "USAGE GUIDE",
@@ -2280,3 +2370,199 @@ class FavourManagerTool(Star):
 
         yield event.plain_result(
             self._help_text("⭐ 好感度指令用法示例 ⭐", groups))
+
+    # ================= 5. 群管理（禁言） =================
+
+    # QQ 群禁言的硬上限就是 30 天，超了平台也会拒，这里先自己夹住
+    MUTE_MAX_SECONDS = 30 * 86400
+
+    @staticmethod
+    def _check_text_arg(value) -> bool:
+        """参数是否真的给了内容。
+
+        框架会先 `re.sub(r"\\s+", " ")` 再按空格切分并丢掉空串，
+        所以「只打了一个空格」和「没打参数」到处理器里都是空字符串。
+        """
+        return bool(str(value or "").strip())
+
+    @staticmethod
+    def _duration_hint() -> str:
+        return ("时长写法：10m / 2h / 1d / 30s，**裸数字按分钟**"
+                "（`禁言 @某人 10` = 10 分钟，`禁言 @某人 600` = 10 小时）")
+
+    @staticmethod
+    def _parse_duration(text: str) -> int:
+        """把时长文案解析成秒。**裸数字按分钟**，认 s/m/h/d 后缀与中文单位。
+
+        '10m' -> 600 秒、'10' -> 600 秒、'2h' -> 7200 秒、'1d' -> 86400 秒。
+        注意 '600' 是 600 **分钟**（10 小时）不是 600 秒 —— 群里口头说
+        「禁言 10」指的就是 10 分钟；要精确到秒必须带 s 后缀。
+        解析不出来返回 0（调用方按非法处理，不要静默当 0 秒禁言）。
+        """
+        t = str(text or "").strip().lower().replace(" ", "")
+        if not t:
+            return 0
+        unit = 60                                   # 裸数字按分钟，符合口头表达习惯
+        if t[-1] in ("s", "m", "h", "d", "秒", "分", "时", "天"):
+            unit = {"s": 1, "秒": 1, "m": 60, "分": 60,
+                    "h": 3600, "时": 3600, "d": 86400, "天": 86400}[t[-1]]
+            t = t[:-1]
+        try:
+            # 不返回负数：'-5m' 这类输入在这里就归零，别把脏值传到平台 API
+            return max(0, int(float(t) * unit))
+        except ValueError:
+            return 0
+
+    @staticmethod
+    def _fmt_duration(seconds: int) -> str:
+        """秒 -> 人话，用于回执里让执行者确认到底要禁多久。"""
+        s = int(seconds)
+        if s <= 0:
+            return "0 秒"
+        if s % 86400 == 0:
+            return f"{s // 86400} 天"
+        if s % 3600 == 0:
+            return f"{s // 3600} 小时"
+        if s % 60 == 0:
+            return f"{s // 60} 分钟"
+        return f"{s} 秒"
+
+    async def _call_group_ban(self, event, group_id: str, user_id: str,
+                              duration: int) -> tuple:
+        """调 OneBot 的 set_group_ban，返回 (成功, 错误描述)。
+
+        各平台挂 call_action 的位置不一样（event.bot.api 或 event.bot），
+        取第一个可用的；失败就把原因带回去，别只说「失败」。
+        """
+        bot = getattr(event, 'bot', None)
+        if bot is None:
+            return False, "当前事件没有 bot 实例，无法调用禁言接口。"
+        fn = None
+        for holder in (getattr(bot, 'api', None), bot):
+            cand = getattr(holder, 'call_action', None) if holder is not None else None
+            if callable(cand):
+                fn = cand
+                break
+        if fn is None:
+            return False, "当前平台不支持调用禁言接口（无 call_action）。"
+        try:
+            params = {"group_id": int(group_id), "user_id": int(user_id),
+                      "duration": int(duration)}
+            res = await fn("set_group_ban", **params)
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}"
+        # OneBot 的失败有两种表达：抛异常，或返回 retcode != 0 的字典。
+        # 只处理异常会把「返回错误字典」当成成功，用户会收到「已禁言」而实际没禁上。
+        if isinstance(res, dict):
+            retcode = res.get("retcode", 0)
+            status = str(res.get("status") or "ok").lower()
+            if retcode not in (0, None) or status == "failed":
+                return False, (f"OneBot 返回失败：retcode={retcode} status={status} "
+                               f"message={res.get('message') or res.get('msg') or '-'}")
+        return True, ""
+
+    async def _resolve_mute_target(self, event, target: str):
+        """禁言前置检查，返回 (目标 uid, 错误文案)。任一检查不过就返回错误。
+
+        权限比自己高或相同的人不能禁 —— 这是群管系统的基本约束，
+        光靠平台拒绝会得到一句没头没尾的「操作失败」。
+        """
+        group_id = str(event.get_group_id() or "")
+        if not group_id:
+            return None, "禁言只能在群聊里使用。"
+        uid = self._get_target_uid(event, target)
+        if not uid:
+            return None, "未找到用户，请使用 @ 或输入 ID。"
+        sender_id = str(event.get_sender_id())
+        if uid == sender_id:
+            return None, "不能禁言自己。"
+        if uid == str(event.get_self_id() or ""):
+            return None, "不能禁言机器人自己。"
+
+        perm_mgr = PermissionManager.get_instance()
+        op_level = await perm_mgr.get_perm_level(event, sender_id)
+        tgt_level = await perm_mgr.get_perm_level(event, uid)
+        # get_perm_level 自己吞异常，查不到一律回 UNKNOWN(-1)，分不清「不在群里」
+        # 还是「查询失败」。所以只有两边都拿到真实等级才比较：拿 -1 跟 -1 比会得出
+        # 「目标等级不低于你」这种自相矛盾的结论，把管理员引到错误的方向上。
+        # 放行不是无节制 —— 入口的 _check_permission 已经验过操作者有群管权限，
+        # 真正的越级限制由 QQ 平台兜底。
+        if op_level > PermLevel.UNKNOWN and tgt_level > PermLevel.UNKNOWN \
+                and tgt_level >= op_level:
+            return None, "目标的管理员等级不低于你，不能禁言。"
+        if op_level <= PermLevel.UNKNOWN or tgt_level <= PermLevel.UNKNOWN:
+            logger.info(f"禁言权限比较跳过：op_level={op_level} tgt_level={tgt_level}"
+                        f"（任一为 UNKNOWN 表示查不到等级，按放行处理）")
+        return uid, ""
+
+    @filter.command("禁言", alias={'群禁言'})
+    async def mute_user(self, event: AstrMessageEvent, target: str = "",
+                        duration: str = ""):
+        """禁言: /禁言 @用户 10m (时长支持 600/10m/2h/1d，群管理员及以上)"""
+        # 两个参数都给默认值：框架在参数缺失时会直接抛 ValueError，
+        # 且把异常原文当成消息发给用户（waking_check/stage.py），
+        # 等于把框架报错暴露到聊天里。自己判空才能给出人话提示。
+        if not self._check_text_arg(target) or not self._check_text_arg(duration):
+            yield event.plain_result(
+                f"用法：/禁言 @用户 10m。{self._duration_hint()}")
+            return
+        if not await self._check_permission(event, PermLevel.ADMIN):
+            yield event.plain_result("权限不足：仅群管理员及以上可用。")
+            return
+
+        uid, err = await self._resolve_mute_target(event, target)
+        if err:
+            yield event.plain_result(f"禁言失败：{err}")
+            return
+
+        seconds = self._parse_duration(duration)
+        if seconds <= 0:
+            yield event.plain_result(f"时长无法识别。{self._duration_hint()}")
+            return
+
+        clamped = False
+        if seconds > self.MUTE_MAX_SECONDS:
+            seconds = self.MUTE_MAX_SECONDS
+            clamped = True
+
+        group_id = str(event.get_group_id())
+        ok, reason = await self._call_group_ban(event, group_id, uid, seconds)
+        if not ok:
+            logger.error(f"禁言 {group_id}/{uid} {seconds}s 失败: {reason}")
+            yield event.plain_result(f"禁言失败：{reason}")
+            return
+
+        name = await self._get_user_display_name(event, uid)
+        logger.info(f"管理员 {event.get_sender_id()} 禁言 {uid}({name}) "
+                    f"{seconds}s @ 群 {group_id}")
+        extra = "（已按平台上限截断为 30 天）" if clamped else ""
+        yield event.plain_result(
+            f"🔇 已禁言 {name}（{uid}）：{self._fmt_duration(seconds)}{extra}")
+
+    @filter.command("解除禁言", alias={'取消禁言', '解禁'})
+    async def unmute_user(self, event: AstrMessageEvent, target: str = ""):
+        """解除禁言: /解除禁言 @用户 (群管理员及以上)"""
+        # 同 mute_user：参数不给默认值框架会在缺参时抛异常并把原文发给用户
+        if not self._check_text_arg(target):
+            yield event.plain_result("用法：/解除禁言 @用户")
+            return
+        if not await self._check_permission(event, PermLevel.ADMIN):
+            yield event.plain_result("权限不足：仅群管理员及以上可用。")
+            return
+
+        uid, err = await self._resolve_mute_target(event, target)
+        if err:
+            yield event.plain_result(f"解除禁言失败：{err}")
+            return
+
+        group_id = str(event.get_group_id())
+        # OneBot 约定 duration=0 即解禁
+        ok, reason = await self._call_group_ban(event, group_id, uid, 0)
+        if not ok:
+            logger.error(f"解除禁言 {group_id}/{uid} 失败: {reason}")
+            yield event.plain_result(f"解除禁言失败：{reason}")
+            return
+
+        name = await self._get_user_display_name(event, uid)
+        logger.info(f"管理员 {event.get_sender_id()} 解除禁言 {uid}({name}) @ 群 {group_id}")
+        yield event.plain_result(f"🔊 已解除 {name}（{uid}）的禁言。")

@@ -54,7 +54,9 @@ class PermissionManager:
         """获取用户在群内的权限级别"""
         try:
             # 检查超级用户
-            if str(user_id) in self.superusers:
+            # 两侧都归一成 str：配置里写数字（12345）还是字符串（"12345"）
+            # 都得认，否则 Bot 管理员会被当成普通成员，所有高权限指令静默失效
+            if str(user_id) in {str(s) for s in (self.superusers or [])}:
                 return PermLevel.SUPERUSER
 
             group_id = event.get_group_id()

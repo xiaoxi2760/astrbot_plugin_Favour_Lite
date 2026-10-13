@@ -336,9 +336,13 @@ def _rank_color(idx):
     return RANK_PLAIN
 
 
-def _draw_rank_badge(d, cx, cy, r, idx, fonts):
-    """段位徽章：金银铜 + 平名，圆底白字。"""
-    c = _rank_color(idx)
+def _draw_rank_badge(d, cx, cy, r, idx, fonts, gilded=True):
+    """段位徽章：金银铜 + 平名，圆底白字。
+
+    gilded=False 时一律用平名色 —— 「最低榜」里倒数第一戴金牌很反直觉，
+    徽章只用来标位次，不该暗示名次好坏。
+    """
+    c = _rank_color(idx) if gilded else RANK_PLAIN
     d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=c + (255,))
     f = fonts.get(9.5, bold=True)
     txt = str(idx + 1)
@@ -524,8 +528,10 @@ def render_favour_card(payload: dict, out_path, fonts: Fonts) -> str:
                    fill=ROW_SEP, width=max(s(1), 1))
 
         cy = ry + s(row_h) / 2
-        # 段位徽章
-        _draw_rank_badge(d, x0 + s(17), int(cy), s(11), i, fonts)
+        # 段位徽章。用 payload 里的全局名次，翻到第 2 页才不会又从 1 开始
+        _draw_rank_badge(d, x0 + s(17), int(cy), s(11),
+                         int(u.get("rank") or (i + 1)) - 1, fonts,
+                         gilded=not payload.get("muted_rank"))
         # 名号圆
         raw_name = str(u.get("name") or "").strip()
         _draw_avatar(img, d, x0 + s(52), int(cy), s(14),
